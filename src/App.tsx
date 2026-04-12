@@ -9,10 +9,8 @@ function App() {
   return (
     <Router>
       <Routes>
-        <Route>
           <Route path="/" element={<Homepage />}></Route>
           <Route path="/watch/:sessionID" element={<WatchRoom />}></Route>
-        </Route>
       </Routes>
     </Router>
   );
