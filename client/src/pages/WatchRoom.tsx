@@ -14,17 +14,18 @@ function WatchRoom() {
     }
 
     const extractVideoId = (url: string) => {
+        let result = url;
         if (url.startsWith("https://www.youtube.com/watch?v=")) {
-            return url.slice(32, url.length);
+            result = url.slice(32, url.length);
         }
         if (url.startsWith("www.youtube.com/watch?v=")) {
-            return url.slice(24, url.length);
+            result = url.slice(24, url.length);
         }
         if (url.startsWith("youtube.com/watch?v=")) {
-            return url.slice(20, url.length);
+            result = url.slice(20, url.length);
         }
 
-        return url;
+        return result.split("&")[0]; // get rid of fragments
     }
 
     return (

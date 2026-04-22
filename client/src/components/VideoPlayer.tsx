@@ -19,6 +19,8 @@ const VideoPlayer = ({ video }: Props) => {
     useEffect(() => {
 
         const initPlayer = () => {
+            if(!playerNode.current) return;
+
             playerInstance.current = new window.YT.Player(playerNode.current, {
                 height: "390",
                 width: "640",
@@ -43,6 +45,12 @@ const VideoPlayer = ({ video }: Props) => {
         return () => {
             playerInstance.current?.destroy?.();
             playerInstance.current = null;
+        }
+    }, []);
+
+    useEffect(() => {
+        if (playerInstance.current && video) {
+            playerInstance.current.loadVideoById(video);
         }
     }, [video]);
 
