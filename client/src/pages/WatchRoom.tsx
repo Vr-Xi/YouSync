@@ -1,11 +1,14 @@
-import { useState } from "react";
-import { useParams } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { useParams, useNavigate } from "react-router-dom";
 import VideoPlayer from "../components/VideoPlayer.tsx";
+import socket from "../socket.ts";
 
 function WatchRoom() {
     const { sessionID } = useParams<string>();
     const [ videoUrl, setVideoUrl ] = useState<string>("");
     const [ videoID, setVideoID ] = useState<string>("");
+    const navigate = useNavigate();
+    const [ memberList, setMembers ] = useState<[string, string][]>([]);
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
@@ -28,6 +31,28 @@ function WatchRoom() {
         return result.split("&")[0]; // get rid of fragments
     }
 
+    useEffect(() => {
+        socket.emit("join-session", sessionID);
+        socket.emit("fetch-members");
+
+        socket.on("session-invalid", () => {
+            navigate("/", { state: { error: "Session does not exist."} });
+        })
+        socket.on("send-members", (members) => {
+            setMembers(members);
+            console.log(members);
+        })
+
+        return () => {
+            // needed for in-page actions to trigger socket disconnect
+            // example: using the "go to previous page" button in browser would usually NOT disconnect
+            socket.emit("leave-session");
+
+            socket.off("session-invalid");
+            socket.off("send-members");
+        }
+    }, []);
+
     return (
         <div>
             <h1>Watch Room - Session ID: {sessionID} </h1>
@@ -41,6 +66,11 @@ function WatchRoom() {
                 <button type="submit">Load Video</button>
             </form>
             <VideoPlayer video={videoID}/>
+            <ul>
+                {memberList.map((entry: [string, string]) => {
+                    return <li key={entry[0]}>{entry[1]}</li>
+                })}
+            </ul>
         </div>
     );
 }
