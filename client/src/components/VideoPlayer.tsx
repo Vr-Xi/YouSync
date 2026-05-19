@@ -18,6 +18,11 @@ const VideoPlayer = ({ video }: Props) => {
     const playerInstance = useRef<any>(null);
     const [ videoStorage, changeVideo ] = useState<string>(video);
 
+    const handleReady = () => {
+        console.log("Player ready"),
+        socket.emit("fetch-video");
+    }
+
     useEffect(() => {
 
         const initPlayer = () => {
@@ -26,9 +31,9 @@ const VideoPlayer = ({ video }: Props) => {
             playerInstance.current = new window.YT.Player(playerNode.current, {
                 height: "390",
                 width: "640",
-                videoId: video ? video : "2H0r81kv5GA", //example
+                videoId: "",
                 events: {
-                    onReady: () => console.log("Player ready"),
+                    onReady: handleReady,
                     onStateChange: (event: any) => console.log("State change", event.data),
                 },
             });

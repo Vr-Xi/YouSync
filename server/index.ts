@@ -11,14 +11,15 @@ const io = new Server(server, {
 });
 
 type Session = {
-    id: string;
-    owner: string;
-    members: Set<string>;
-    createdAt: number;
-    lastActivity: number;
-    nicknameMap: Map<string, string>;
-    nextUserNumber: number;
-    deletionTimer?: NodeJS.Timeout;
+    id: string,
+    owner: string,
+    members: Set<string>,
+    createdAt: number,
+    lastActivity: number,
+    nicknameMap: Map<string, string>,
+    nextUserNumber: number,
+    deletionTimer?: NodeJS.Timeout,
+    videoID?: string,
 };
 
 const sessions: Map<string, Session> = new Map();
@@ -83,6 +84,7 @@ io.on("connection", (socket) => {
             lastActivity: Date.now(),
             nicknameMap: new Map(),
             nextUserNumber: 1,
+            videoID: "2H0r81kv5GA"
         };
 
         sessions.set(id, session);
@@ -108,10 +110,10 @@ io.on("connection", (socket) => {
             session.nextUserNumber++;
         }
 
-        socket.emit("session-info", {
-            id: session.id,
-            members: Array.from(session.nicknameMap.values()),
-        });
+        // socket.emit("session-info", {
+        //     id: session.id,
+        //     members: Array.from(session.nicknameMap.values()),
+        // });
 
         socket.to(sessionID).emit("user-joined", {
             id: socket.id,
@@ -135,8 +137,17 @@ io.on("connection", (socket) => {
     socket.on("load-request", (video: string) => {
         const session = getSession(socket.id);
         if (!session) return;
+        
+        session.videoID = video;
+        io.to(session.id).emit("load-order", session.videoID);
+    });    
     
-        io.to(session.id).emit("load-order", video);
+    //--
+    socket.on("fetch-video", () => {
+        const session = getSession(socket.id);
+        if (!session) return;
+    
+        socket.emit("load-order", session.videoID);
     });
 
     //--
