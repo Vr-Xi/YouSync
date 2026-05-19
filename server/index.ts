@@ -18,6 +18,7 @@ type Session = {
     lastActivity: number;
     nicknameMap: Map<string, string>;
     nextUserNumber: number;
+    deletionTimer?: NodeJS.Timeout;
 };
 
 const sessions: Map<string, Session> = new Map();
@@ -41,7 +42,16 @@ function disconnectHelper(socketID: string): void {
 
     // delete when empty
     if (session.members.size === 0) {
-        sessions.delete(sessionID);
+        if (session.deletionTimer) {
+            clearTimeout(session.deletionTimer);
+        }
+
+        session.deletionTimer = setTimeout(() => {
+            if (session.members.size === 0) {
+                sessions.delete(sessionID);
+                console.log("Session emptied -- deleting.")
+            }
+        }, 10_000);
     } else {
         // inform everyone that someone just left
         io.to(sessionID).emit("send-members", Array.from(session.nicknameMap.entries()));
