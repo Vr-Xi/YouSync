@@ -6,6 +6,7 @@ function Homepage() {
   const navigate = useNavigate();
   const location = useLocation();
   const error = location.state?.error;
+  const errorCheck = location.state?.show;
 
   const joinClick = (): void => {
     navigate("/watch/test123");
@@ -16,14 +17,26 @@ function Homepage() {
   } 
 
   useEffect(() => {
+
+    if (errorCheck === 0) {
+      navigate(".", { replace: true, state: null} );
+    } else if (errorCheck === 1) {
+      navigate(".", { replace: true, state: {
+        error: error,
+        show: 0
+      }});
+    };
+
     
     socket.on("session-created", (sessionId: string) => {
       navigate(`/watch/${sessionId}`);
-    })
+    });
+
 
     return () => {
       socket.off("session-created");
-    }
+    };
+
   }, []);
   
 

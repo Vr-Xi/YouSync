@@ -38,7 +38,7 @@ function WatchRoom() {
         const prevSessionID = sessionStorage.getItem("prevSessionID");
         if (prevSessionID != sessionID) sessionStorage.clear();
         sessionStorage.setItem("prevSessionID", sessionID);
-        
+
         const nickname = sessionStorage.getItem("nickname");
         //
 
@@ -47,7 +47,7 @@ function WatchRoom() {
 
 
         socket.on("session-invalid", () => {
-            navigate("/", { state: { error: "Session does not exist."} });
+            navigate("/", { state: { error: "You tried to access a session that does not exist.", show: 1} });
         })
         socket.on("send-members", (members) => {
             setMembers(members);
