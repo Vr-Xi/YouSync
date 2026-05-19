@@ -48,6 +48,13 @@ function disconnectHelper(socketID: string): void {
     }
 }
 
+function getSession(socketID: string): Session | undefined {
+    const sessionID = socketToSession.get(socketID);
+    if (!sessionID) return;
+    const session = sessions.get(sessionID);
+    return session;
+}
+
 io.on("connection", (socket) => {
     console.log("User connected:", socket.id);
 
@@ -75,7 +82,7 @@ io.on("connection", (socket) => {
     });
 
     //--
-    socket.on("join-session", (sessionID: string) => {
+    socket.on("join-session", (sessionID: string, nickname: string) => {
         const session = sessions.get(sessionID);
         if (!session) {
             socket.emit("session-invalid");
@@ -84,8 +91,12 @@ io.on("connection", (socket) => {
 
         session.members.add(socket.id);
         session.lastActivity = Date.now();
-        session.nicknameMap.set(socket.id, `User ${session.nextUserNumber}`);
-        session.nextUserNumber++;
+        if (nickname != null) {
+            session.nicknameMap.set(socket.id, nickname);
+        } else {
+            session.nicknameMap.set(socket.id, `User ${session.nextUserNumber}`);
+            session.nextUserNumber++;
+        }
 
         socket.emit("session-info", {
             id: session.id,
@@ -103,13 +114,11 @@ io.on("connection", (socket) => {
 
     //--
     socket.on("fetch-members", () => {
-        const sessionID = socketToSession.get(socket.id);
-        if (!sessionID) return;
-        const session = sessions.get(sessionID);
+        const session = getSession(socket.id);
         if (!session) return;
-        
-
+    
         io.to(session.id).emit("send-members", Array.from(session.nicknameMap.entries()));
+        socket.emit("send-nickname", session.nicknameMap.get(socket.id));
     });
 
     //--

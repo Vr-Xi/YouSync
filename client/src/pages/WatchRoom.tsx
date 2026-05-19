@@ -10,6 +10,8 @@ function WatchRoom() {
     const navigate = useNavigate();
     const [ memberList, setMembers ] = useState<[string, string][]>([]);
 
+
+
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
         setVideoID(extractVideoId(videoUrl));
@@ -32,16 +34,28 @@ function WatchRoom() {
     }
 
     useEffect(() => {
-        socket.emit("join-session", sessionID);
+        // managing nickname persistence across page reload
+        const prevSessionID = sessionStorage.getItem("prevSessionID");
+        if (prevSessionID != sessionID) sessionStorage.clear();
+        sessionStorage.setItem("prevSessionID", sessionID);
+        
+        const nickname = sessionStorage.getItem("nickname");
+        //
+
+        socket.emit("join-session", sessionID, nickname);
         socket.emit("fetch-members");
+
 
         socket.on("session-invalid", () => {
             navigate("/", { state: { error: "Session does not exist."} });
         })
         socket.on("send-members", (members) => {
             setMembers(members);
-            console.log(members);
         })
+        socket.on("send-nickname", (newNickname) => {
+            sessionStorage.setItem("nickname", newNickname);
+        })
+
 
         return () => {
             // needed for in-page actions to trigger socket disconnect
@@ -50,6 +64,7 @@ function WatchRoom() {
 
             socket.off("session-invalid");
             socket.off("send-members");
+            socket.off("send-nickname");
         }
     }, []);
 
