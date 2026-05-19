@@ -132,6 +132,14 @@ io.on("connection", (socket) => {
     });
 
     //--
+    socket.on("load-request", (video: string) => {
+        const session = getSession(socket.id);
+        if (!session) return;
+    
+        io.to(session.id).emit("load-order", video);
+    });
+
+    //--
     socket.on("leave-session", () => {
         // this exists because not all ways of leaving a session actually cause a disconnect event
         // for example, navigating to the previous page via the browser button will not fire a socket disconnect

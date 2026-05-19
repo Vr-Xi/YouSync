@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import socket from "../socket.ts"
 
 declare global {
     interface Window {
@@ -15,6 +16,7 @@ type Props = {
 const VideoPlayer = ({ video }: Props) => {
     const playerNode = useRef<HTMLDivElement | null>(null);
     const playerInstance = useRef<any>(null);
+    const [ videoStorage, changeVideo ] = useState<string>(video);
 
     useEffect(() => {
 
@@ -42,16 +44,29 @@ const VideoPlayer = ({ video }: Props) => {
             document.body.appendChild(tag);
         }
 
+        // socket actions
+        socket.on("load-order", (toLoad: string) => {
+            if (toLoad !== videoStorage) changeVideo(toLoad);
+        })
+        //
+
         return () => {
             playerInstance.current?.destroy?.();
             playerInstance.current = null;
+
+            socket.off("load-order");
         }
     }, []);
 
     useEffect(() => {
-        if (playerInstance.current && video) {
-            playerInstance.current.loadVideoById(video);
+        if (playerInstance.current && videoStorage !== "") {
+            playerInstance.current.loadVideoById(videoStorage);
+            socket.emit("load-request", videoStorage);
         }
+    }, [videoStorage]);
+
+    useEffect(() => {
+        changeVideo(video);
     }, [video]);
 
     return <div ref={playerNode}></div>
