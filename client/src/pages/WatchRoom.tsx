@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import VideoPlayer from "../components/VideoPlayer.tsx";
 import socket from "../socket.ts";
@@ -6,7 +6,7 @@ import socket from "../socket.ts";
 function WatchRoom() {
     const { sessionID } = useParams<string>();
     const [ videoUrl, setVideoUrl ] = useState<string>("");
-    const [ videoID, setVideoID ] = useState<string>("");
+    const videoID = useRef<string>(""); // different from videoID in VideoPlayer.tsx! This one holds the ID extracted from the form, to be used only for changing
     const navigate = useNavigate();
     const [ memberList, setMembers ] = useState<[string, string][]>([]);
 
@@ -14,8 +14,8 @@ function WatchRoom() {
 
     const handleSubmit = (e: any) => {
         e.preventDefault();
-        setVideoID(extractVideoId(videoUrl));
-        console.log("Video ID:", videoID);
+        videoID.current = extractVideoId(videoUrl);
+        socket.emit("load-request", videoID.current);
     }
 
     const extractVideoId = (url: string) => {
@@ -44,6 +44,7 @@ function WatchRoom() {
 
         socket.emit("join-session", sessionID, nickname);
         socket.emit("fetch-members");
+        socket.emit("fetch-video");
 
 
         socket.on("session-invalid", () => {
@@ -80,7 +81,7 @@ function WatchRoom() {
                 />
                 <button type="submit">Load Video</button>
             </form>
-            <VideoPlayer video={videoID}/>
+            <VideoPlayer />
             <ul>
                 {memberList.map((entry: [string, string]) => {
                     return <li key={entry[0]}>{entry[1]}</li>

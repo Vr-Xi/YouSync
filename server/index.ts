@@ -144,10 +144,12 @@ io.on("connection", (socket) => {
     
     //--
     socket.on("fetch-video", () => {
+        console.log("video fetch arrived");
         const session = getSession(socket.id);
         if (!session) return;
     
         socket.emit("load-order", session.videoID);
+        console.log("video fetch succeeded");
     });
 
     //--
