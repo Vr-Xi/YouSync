@@ -28,11 +28,12 @@ type Client = {
     id: string,
     nickname: string,
     role: string,
-    joinedAt?: number,
+    joinedAt: number,
 }
 
 const sessions: Map<string, Session> = new Map();
 const socketToSession: Map<string, string> = new Map();
+let ownerReconnectGrace: NodeJS.Timeout;
 
 function generateSessionId(): string {
     return Math.random().toString(36).substring(2, 8);
@@ -55,14 +56,58 @@ function getNicknames(sessionID: string) {
     return result;
 }
 
+function getSession(socketID: string): Session | undefined {
+    const sessionID = socketToSession.get(socketID);
+    if (!sessionID) return;
+    const session = sessions.get(sessionID);
+    return session;
+}
+
+function chooseNewOwner(sessionID: string) {
+        const session = sessions.get(sessionID);
+        if (!session) return;
+
+        let candidateSocket;
+        let candidate;
+
+        console.log("___________Crowning a new Owner___________");
+
+        for (const [ socketID, member ] of session.members) {
+            
+            console.log(member.joinedAt);
+            if (!candidate) {
+                candidateSocket = socketID;
+                candidate = member;
+            } else if (candidate.joinedAt > member.joinedAt) {
+                    candidateSocket = socketID;
+                    candidate = member;
+            }
+        };
+        
+        console.log("___________Long live the Owner!___________");
+
+        if (!candidate) return;
+        console.log(candidate.nickname);
+
+        if (!candidateSocket) return;
+        session.owner = candidate.id;
+        io.to(candidateSocket).emit("become-owner");
+}
+
 function disconnectHelper(socketID: string): void {
     // used in both socket.on("disconnect") and socket.on("leave-session")
     const session = getSession(socketID);
     if (!session) return;
 
     // remove the leaving member from all connections to the session
+    const member = session.members.get(socketID);
+    if (!member) return;
+
     session.members.delete(socketID);
     socketToSession.delete(socketID);
+
+
+
 
     // delete when empty
     if (session.members.size === 0) {
@@ -80,29 +125,19 @@ function disconnectHelper(socketID: string): void {
         // inform everyone that someone just left
         const nicknames = getNicknames(session.id);
         io.to(session.id).emit("send-members", nicknames);
+        
+        
+        // when the session owner leaves, choose a new owner
+        if (member.id === session.owner) {
+            console.log("is the owner gone?");
+            ownerReconnectGrace = setTimeout(() => {
+                console.log("our owner is gone! we need a new one!");
+                chooseNewOwner(session.id);
+            }, 5_000);
+        }
     }
 }
 
-function getSession(socketID: string): Session | undefined {
-    const sessionID = socketToSession.get(socketID);
-    if (!sessionID) return;
-    const session = sessions.get(sessionID);
-    return session;
-}
-
-
-// io.use((socket, next) => {
-//     const token = socket.handshake.auth?.token;
-//     try {
-//         const payload = jwt.verify(token, SECRET) as {
-//             sessionID: string; CLIENTID: string; role: "owner"|"member";
-//         };
-//         socket.data = payload;
-//         next();
-//     } catch {
-//         next(new Error("auth failed")); 
-//     }
-// });
 
 io.on("connection", (socket) => {
     console.log("User connected:", socket.id);
@@ -138,6 +173,16 @@ io.on("connection", (socket) => {
             return;
         }
 
+        // if the session was about to close down, stop that
+        if (session.deletionTimer) {
+            clearTimeout(session.deletionTimer);
+            // needs a new owner, too. give it 1 second to set up the newcomer first
+            setTimeout(() => {
+                chooseNewOwner(session.id);
+            }, 1_000);
+        }
+
+        // if the user doesn't already have a nickname through sessionStorage, make a new nickname
         if (nickname === null) {
             nickname = `User ${session.nextUserNumber}`;
             session.nextUserNumber++;
@@ -150,7 +195,14 @@ io.on("connection", (socket) => {
             joinedAt: Date.now()
         }
 
-        if (!session.owner) session.owner = clientID;
+        // owner is only null at the very start, when the session creator comes in
+        if (!session.owner) {
+            session.owner = clientID;
+        // if the owner left, ownerReconnectGrace gives them a short window to return
+        } else if (ownerReconnectGrace && session.owner === clientID) {
+            console.log("we try to clear the timeout");
+            clearTimeout(ownerReconnectGrace);
+        }
         session.members.set(socket.id, client);
         session.lastActivity = Date.now();
 
