@@ -2,6 +2,8 @@ import express from "express";
 import http from "http";
 import { Server } from "socket.io";
 import cors from "cors";
+import jwt from "jsonwebtoken";
+import "dotenv/config";
 
 const app = express();
 app.use(cors());
@@ -9,18 +11,25 @@ const server = http.createServer(app);
 const io = new Server(server, {
     cors: {origin: "*"},
 });
+const SECRET = process.env.JWT_SECRET as string;
 
 type Session = {
     id: string,
-    owner: string,
-    members: Set<string>,
+    owner: string | null,
+    members: Map<string, Client>,
     createdAt: number,
     lastActivity: number,
-    nicknameMap: Map<string, string>,
     nextUserNumber: number,
     deletionTimer?: NodeJS.Timeout,
     videoID?: string,
 };
+
+type Client = {
+    id: string,
+    nickname: string,
+    role: string,
+    joinedAt?: number,
+}
 
 const sessions: Map<string, Session> = new Map();
 const socketToSession: Map<string, string> = new Map();
@@ -29,16 +38,30 @@ function generateSessionId(): string {
     return Math.random().toString(36).substring(2, 8);
 }
 
+function issueToken(clientID: string ) {
+    return jwt.sign({ clientID }, SECRET, { expiresIn: "24h" });
+}
+
+function getNicknames(sessionID: string) {
+    const session = sessions.get(sessionID);
+    if (!session) return;
+
+    const result: string[][] = [];
+
+    for (const member of session.members.values()) {
+        result.push([member.id, member.nickname]);
+    }
+
+    return result;
+}
+
 function disconnectHelper(socketID: string): void {
     // used in both socket.on("disconnect") and socket.on("leave-session")
-    const sessionID = socketToSession.get(socketID);
-    if (!sessionID) return;
-    const session = sessions.get(sessionID);
+    const session = getSession(socketID);
     if (!session) return;
 
     // remove the leaving member from all connections to the session
     session.members.delete(socketID);
-    session.nicknameMap.delete(socketID);
     socketToSession.delete(socketID);
 
     // delete when empty
@@ -49,13 +72,14 @@ function disconnectHelper(socketID: string): void {
 
         session.deletionTimer = setTimeout(() => {
             if (session.members.size === 0) {
-                sessions.delete(sessionID);
+                sessions.delete(session.id);
                 console.log("Session emptied -- deleting.")
             }
         }, 10_000);
     } else {
         // inform everyone that someone just left
-        io.to(sessionID).emit("send-members", Array.from(session.nicknameMap.entries()));
+        const nicknames = getNicknames(session.id);
+        io.to(session.id).emit("send-members", nicknames);
     }
 }
 
@@ -65,6 +89,20 @@ function getSession(socketID: string): Session | undefined {
     const session = sessions.get(sessionID);
     return session;
 }
+
+
+// io.use((socket, next) => {
+//     const token = socket.handshake.auth?.token;
+//     try {
+//         const payload = jwt.verify(token, SECRET) as {
+//             sessionID: string; CLIENTID: string; role: "owner"|"member";
+//         };
+//         socket.data = payload;
+//         next();
+//     } catch {
+//         next(new Error("auth failed")); 
+//     }
+// });
 
 io.on("connection", (socket) => {
     console.log("User connected:", socket.id);
@@ -78,11 +116,10 @@ io.on("connection", (socket) => {
 
         const session = {
             id,
-            owner: socket.id,
-            members: new Set([]),
+            owner: null,
+            members: new Map(),
             createdAt: Date.now(),
             lastActivity: Date.now(),
-            nicknameMap: new Map(),
             nextUserNumber: 1,
             videoID: "2H0r81kv5GA"
         };
@@ -94,30 +131,43 @@ io.on("connection", (socket) => {
     });
 
     //--
-    socket.on("join-session", (sessionID: string, nickname: string) => {
+    socket.on("join-session", (sessionID:string, clientID: string, nickname: string) => {
         const session = sessions.get(sessionID);
         if (!session) {
             socket.emit("session-invalid");
             return;
         }
 
-        session.members.add(socket.id);
-        session.lastActivity = Date.now();
-        if (nickname != null) {
-            session.nicknameMap.set(socket.id, nickname);
-        } else {
-            session.nicknameMap.set(socket.id, `User ${session.nextUserNumber}`);
+        if (nickname === null) {
+            nickname = `User ${session.nextUserNumber}`;
             session.nextUserNumber++;
         }
+
+        const client: Client = {
+            id: clientID,
+            nickname: nickname,
+            role: "member",
+            joinedAt: Date.now()
+        }
+
+        if (!session.owner) session.owner = clientID;
+        session.members.set(socket.id, client);
+        session.lastActivity = Date.now();
 
         // socket.emit("session-info", {
         //     id: session.id,
         //     members: Array.from(session.nicknameMap.values()),
         // });
 
+
+        // token handling
+        const token = issueToken(clientID);
+        socket.emit("auth-token", token);
+        //
+
         socket.to(sessionID).emit("user-joined", {
             id: socket.id,
-            nickname: session.nicknameMap.get(socket.id),
+            nickname: getNicknames(sessionID)
         });
 
         socket.join(sessionID);
@@ -128,9 +178,11 @@ io.on("connection", (socket) => {
     socket.on("fetch-members", () => {
         const session = getSession(socket.id);
         if (!session) return;
-    
-        io.to(session.id).emit("send-members", Array.from(session.nicknameMap.entries()));
-        socket.emit("send-nickname", session.nicknameMap.get(socket.id));
+        
+        const nicknames = getNicknames(session.id);
+        io.to(session.id).emit("send-members", nicknames);
+        const nickname = session.members.get(socket.id)?.nickname || "missing nickname";
+        socket.emit("send-nickname", nickname);
     });
 
     //--
@@ -144,12 +196,29 @@ io.on("connection", (socket) => {
     
     //--
     socket.on("fetch-video", () => {
-        console.log("video fetch arrived");
+        // console.log("video fetch arrived");
         const session = getSession(socket.id);
         if (!session) return;
     
         socket.emit("load-order", session.videoID);
-        console.log("video fetch succeeded");
+        // console.log("video fetch succeeded");
+    });    //--
+
+    socket.on("check-ownership", (token: string) => {
+        if (!token) return;
+
+        let data;
+
+        try {
+            data = jwt.verify(token, SECRET) as { clientID: string };
+        } catch {
+            return;
+        }
+
+        const session = getSession(socket.id);
+        if (!session) return;
+
+        if (session.owner === data.clientID) socket.emit("become-owner");
     });
 
     //--
@@ -163,9 +232,7 @@ io.on("connection", (socket) => {
 
     //--
     socket.on("disconnect", () => {
-        const sessionID = socketToSession.get(socket.id)
-        if (!sessionID) return;
-        const session = sessions.get(sessionID);
+        const session = getSession(socket.id);
         if (!session) return;
         console.log("User disconnected:", socket.id);
         disconnectHelper(socket.id);

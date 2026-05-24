@@ -9,6 +9,8 @@ function WatchRoom() {
     const videoID = useRef<string>(""); // different from videoID in VideoPlayer.tsx! This one holds the ID extracted from the form, to be used only for changing
     const navigate = useNavigate();
     const [ memberList, setMembers ] = useState<[string, string][]>([]);
+    const [ isOwner, changeOwnership ] = useState<boolean>(false);
+
 
 
 
@@ -34,6 +36,7 @@ function WatchRoom() {
     }
 
     useEffect(() => {
+
         // managing nickname persistence across page reload
         const prevSessionID = sessionStorage.getItem("prevSessionID");
         if (prevSessionID != sessionID) sessionStorage.clear();
@@ -41,8 +44,10 @@ function WatchRoom() {
 
         const nickname = sessionStorage.getItem("nickname");
         //
+        if (!sessionStorage.getItem("clientID")) sessionStorage.setItem("clientID", crypto.randomUUID())
+        const clientID = sessionStorage.getItem("clientID");
 
-        socket.emit("join-session", sessionID, nickname);
+        socket.emit("join-session", sessionID, clientID, nickname);
         socket.emit("fetch-members");
         socket.emit("fetch-video");
 
@@ -56,6 +61,16 @@ function WatchRoom() {
         socket.on("send-nickname", (newNickname) => {
             sessionStorage.setItem("nickname", newNickname);
         })
+        socket.on("auth-token", (token: string) => {
+            // const payload = JSON.parse(atob(token.split(".")[1]));
+            // console.log("clientID check is: " + payload.clientID);
+            sessionStorage.setItem("token", token);
+            socket.emit("check-ownership", sessionStorage.getItem("token"));
+        });
+        socket.on("become-owner", () => {
+            changeOwnership(true);
+            // console.log("became owner. see? " + isOwner);
+        })
 
 
         return () => {
@@ -66,13 +81,15 @@ function WatchRoom() {
             socket.off("session-invalid");
             socket.off("send-members");
             socket.off("send-nickname");
+            socket.off("auth-token");
+            socket.off("become-owner");
         }
     }, []);
 
     return (
         <div>
             <h1>Watch Room - Session ID: {sessionID} </h1>
-            <form onSubmit={handleSubmit}>
+            {isOwner && <form onSubmit={handleSubmit}>
                 <input 
                     type="text" 
                     value={videoUrl}
@@ -80,11 +97,16 @@ function WatchRoom() {
                     placeholder="Paste YouTube link"
                 />
                 <button type="submit">Load Video</button>
-            </form>
+            </form>}
             <VideoPlayer />
             <ul>
                 {memberList.map((entry: [string, string]) => {
-                    return <li key={entry[0]}>{entry[1]}</li>
+                    return (
+                        <li key={entry[0]}>
+                            {entry[1]}
+                            {isOwner && <button>Make Owner</button>}
+                        </li>
+                    )
                 })}
             </ul>
         </div>
