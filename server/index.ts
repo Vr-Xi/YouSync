@@ -17,6 +17,7 @@ type Session = {
     id: string,
     owner: string | null,
     members: Map<string, Client>,
+    memberToSocket: Map<string, string>,
     createdAt: number,
     lastActivity: number,
     nextUserNumber: number,
@@ -70,7 +71,7 @@ function chooseNewOwner(sessionID: string) {
         let candidateSocket;
         let candidate;
 
-        console.log("___________Crowning a new Owner___________");
+        // console.log("___________Crowning a new Owner___________");
 
         for (const [ socketID, member ] of session.members) {
             
@@ -84,7 +85,7 @@ function chooseNewOwner(sessionID: string) {
             }
         };
         
-        console.log("___________Long live the Owner!___________");
+        // console.log("___________Long live the Owner!___________");
 
         if (!candidate) return;
         console.log(candidate.nickname);
@@ -104,6 +105,7 @@ function disconnectHelper(socketID: string): void {
     if (!member) return;
 
     session.members.delete(socketID);
+    session.memberToSocket.delete(member.id);
     socketToSession.delete(socketID);
 
 
@@ -129,9 +131,9 @@ function disconnectHelper(socketID: string): void {
         
         // when the session owner leaves, choose a new owner
         if (member.id === session.owner) {
-            console.log("is the owner gone?");
+            // console.log("is the owner gone?");
             ownerReconnectGrace = setTimeout(() => {
-                console.log("our owner is gone! we need a new one!");
+                // console.log("our owner is gone! we need a new one!");
                 chooseNewOwner(session.id);
             }, 5_000);
         }
@@ -153,6 +155,7 @@ io.on("connection", (socket) => {
             id,
             owner: null,
             members: new Map(),
+            memberToSocket: new Map(),
             createdAt: Date.now(),
             lastActivity: Date.now(),
             nextUserNumber: 1,
@@ -184,7 +187,7 @@ io.on("connection", (socket) => {
 
         // if the user doesn't already have a nickname through sessionStorage, make a new nickname
         if (nickname === null) {
-            nickname = `User ${session.nextUserNumber}`;
+            nickname = `User ${session.nextUserNumber}`; // need to change this as well
             session.nextUserNumber++;
         }
 
@@ -200,10 +203,11 @@ io.on("connection", (socket) => {
             session.owner = clientID;
         // if the owner left, ownerReconnectGrace gives them a short window to return
         } else if (ownerReconnectGrace && session.owner === clientID) {
-            console.log("we try to clear the timeout");
+            // console.log("we try to clear the timeout");
             clearTimeout(ownerReconnectGrace);
         }
         session.members.set(socket.id, client);
+        session.memberToSocket.set(client.id, socket.id);
         session.lastActivity = Date.now();
 
         // socket.emit("session-info", {
@@ -254,8 +258,9 @@ io.on("connection", (socket) => {
     
         socket.emit("load-order", session.videoID);
         // console.log("video fetch succeeded");
-    });    //--
-
+    });    
+    
+    //--
     socket.on("check-ownership", (token: string) => {
         if (!token) return;
 
@@ -271,6 +276,30 @@ io.on("connection", (socket) => {
         if (!session) return;
 
         if (session.owner === data.clientID) socket.emit("become-owner");
+    });
+    
+    //--
+    socket.on("change-owner", (token: string, clientID) => {
+        if (!token) return;
+
+        let data;
+
+        try {
+            data = jwt.verify(token, SECRET) as { clientID: string };
+        } catch {
+            return;
+        }
+
+        const session = getSession(socket.id);
+        if (!session) return;
+
+        if (session.owner === data.clientID) {
+            const newOwnerSocket: string | undefined = session.memberToSocket.get(clientID);
+            if (!newOwnerSocket) return;
+            session.owner = clientID;
+            io.to(newOwnerSocket).emit("become-owner");
+            socket.emit("unbecome-owner");
+        }
     });
 
     //--

@@ -35,6 +35,10 @@ function WatchRoom() {
         return result.split("&")[0]; // get rid of fragments
     }
 
+    function handleMakeOwner(clientID: string) {
+        socket.emit("change-owner", sessionStorage.getItem("token"), clientID);
+    };
+
     useEffect(() => {
 
         // managing nickname persistence across page reload
@@ -62,15 +66,15 @@ function WatchRoom() {
             sessionStorage.setItem("nickname", newNickname);
         })
         socket.on("auth-token", (token: string) => {
-            // const payload = JSON.parse(atob(token.split(".")[1]));
-            // console.log("clientID check is: " + payload.clientID);
             sessionStorage.setItem("token", token);
             socket.emit("check-ownership", sessionStorage.getItem("token"));
         });
         socket.on("become-owner", () => {
             changeOwnership(true);
-            // console.log("became owner. see? " + isOwner);
         })
+        socket.on("unbecome-owner", () => {
+            changeOwnership(false);
+        });
 
 
         return () => {
@@ -83,6 +87,7 @@ function WatchRoom() {
             socket.off("send-nickname");
             socket.off("auth-token");
             socket.off("become-owner");
+            socket.off("unbecome-owner");
         }
     }, []);
 
@@ -104,7 +109,8 @@ function WatchRoom() {
                     return (
                         <li key={entry[0]}>
                             {entry[1]}
-                            {isOwner && <button>Make Owner</button>}
+                            {(isOwner && entry[0] != sessionStorage.getItem("clientID")) && <button onClick={() => handleMakeOwner(entry[0])}>Make Owner</button>}
+                            {(isOwner && entry[0] != sessionStorage.getItem("clientID")) && <button>Kick</button>}
                         </li>
                     )
                 })}
