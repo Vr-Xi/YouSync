@@ -9,7 +9,7 @@ function WatchRoom() {
     const videoID = useRef<string>(""); // different from videoID in VideoPlayer.tsx! This one holds the ID extracted from the form, to be used only for changing
     const navigate = useNavigate();
     const [ memberList, setMembers ] = useState<[string, string][]>([]);
-    const [ isOwner, changeOwnership ] = useState<boolean>(false);
+    const [ isHost, changeHostship ] = useState<boolean>(false);
 
 
 
@@ -17,7 +17,7 @@ function WatchRoom() {
     const handleSubmit = (e: any) => {
         e.preventDefault();
         videoID.current = extractVideoId(videoUrl);
-        socket.emit("load-request", videoID.current);
+        socket.emit("load-request", videoID.current, sessionStorage.getItem("token"));
     }
 
     const extractVideoId = (url: string) => {
@@ -35,8 +35,8 @@ function WatchRoom() {
         return result.split("&")[0]; // get rid of fragments
     }
 
-    function handleMakeOwner(clientID: string) {
-        socket.emit("change-owner", sessionStorage.getItem("token"), clientID);
+    const handleMakeHost = (clientID: string) => {
+        socket.emit("change-host", sessionStorage.getItem("token"), clientID);
     };
 
     useEffect(() => {
@@ -67,13 +67,13 @@ function WatchRoom() {
         })
         socket.on("auth-token", (token: string) => {
             sessionStorage.setItem("token", token);
-            socket.emit("check-ownership", sessionStorage.getItem("token"));
+            socket.emit("check-hostship", sessionStorage.getItem("token"));
         });
-        socket.on("become-owner", () => {
-            changeOwnership(true);
+        socket.on("become-host", () => {
+            changeHostship(true);
         })
-        socket.on("unbecome-owner", () => {
-            changeOwnership(false);
+        socket.on("unbecome-host", () => {
+            changeHostship(false);
         });
 
 
@@ -86,15 +86,15 @@ function WatchRoom() {
             socket.off("send-members");
             socket.off("send-nickname");
             socket.off("auth-token");
-            socket.off("become-owner");
-            socket.off("unbecome-owner");
+            socket.off("become-host");
+            socket.off("unbecome-host");
         }
     }, []);
 
     return (
         <div>
             <h1>Watch Room - Session ID: {sessionID} </h1>
-            {isOwner && <form onSubmit={handleSubmit}>
+            {isHost && <form onSubmit={handleSubmit}>
                 <input 
                     type="text" 
                     value={videoUrl}
@@ -109,8 +109,8 @@ function WatchRoom() {
                     return (
                         <li key={entry[0]}>
                             {entry[1]}
-                            {(isOwner && entry[0] != sessionStorage.getItem("clientID")) && <button onClick={() => handleMakeOwner(entry[0])}>Make Owner</button>}
-                            {(isOwner && entry[0] != sessionStorage.getItem("clientID")) && <button>Kick</button>}
+                            {(isHost && entry[0] != sessionStorage.getItem("clientID")) && <button onClick={() => handleMakeHost(entry[0])}>Make Host</button>}
+                            {(isHost && entry[0] != sessionStorage.getItem("clientID")) && <button>Kick</button>}
                         </li>
                     )
                 })}

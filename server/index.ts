@@ -15,14 +15,17 @@ const SECRET = process.env.JWT_SECRET as string;
 
 type Session = {
     id: string,
-    owner: string | null,
+    host: string | null,
     members: Map<string, Client>,
     memberToSocket: Map<string, string>,
     createdAt: number,
     lastActivity: number,
     nextUserNumber: number,
     deletionTimer?: NodeJS.Timeout,
-    videoID?: string,
+    videoID: string,
+    status: string,
+    videoTime: number,
+    timeUpdatedAt: number,
 };
 
 type Client = {
@@ -34,7 +37,7 @@ type Client = {
 
 const sessions: Map<string, Session> = new Map();
 const socketToSession: Map<string, string> = new Map();
-let ownerReconnectGrace: NodeJS.Timeout;
+let hostReconnectGrace: NodeJS.Timeout;
 
 function generateSessionId(): string {
     return Math.random().toString(36).substring(2, 8);
@@ -64,18 +67,16 @@ function getSession(socketID: string): Session | undefined {
     return session;
 }
 
-function chooseNewOwner(sessionID: string) {
+function chooseNewHost(sessionID: string) {
         const session = sessions.get(sessionID);
         if (!session) return;
 
         let candidateSocket;
         let candidate;
 
-        // console.log("___________Crowning a new Owner___________");
+        // console.log("___________Crowning a new Host___________");
 
         for (const [ socketID, member ] of session.members) {
-            
-            console.log(member.joinedAt);
             if (!candidate) {
                 candidateSocket = socketID;
                 candidate = member;
@@ -85,14 +86,13 @@ function chooseNewOwner(sessionID: string) {
             }
         };
         
-        // console.log("___________Long live the Owner!___________");
+        // console.log("___________Long live the Host!___________");
 
-        if (!candidate) return;
-        console.log(candidate.nickname);
-
+        
         if (!candidateSocket) return;
-        session.owner = candidate.id;
-        io.to(candidateSocket).emit("become-owner");
+        if (!candidate) return;
+        session.host = candidate.id;
+        io.to(candidateSocket).emit("become-host");
 }
 
 function disconnectHelper(socketID: string): void {
@@ -129,12 +129,12 @@ function disconnectHelper(socketID: string): void {
         io.to(session.id).emit("send-members", nicknames);
         
         
-        // when the session owner leaves, choose a new owner
-        if (member.id === session.owner) {
-            // console.log("is the owner gone?");
-            ownerReconnectGrace = setTimeout(() => {
-                // console.log("our owner is gone! we need a new one!");
-                chooseNewOwner(session.id);
+        // when the session host leaves, choose a new host
+        if (member.id === session.host) {
+            // console.log("is the host gone?");
+            hostReconnectGrace = setTimeout(() => {
+                // console.log("our host is gone! we need a new one!");
+                chooseNewHost(session.id);
             }, 5_000);
         }
     }
@@ -153,13 +153,17 @@ io.on("connection", (socket) => {
 
         const session = {
             id,
-            owner: null,
+            host: null,
             members: new Map(),
             memberToSocket: new Map(),
             createdAt: Date.now(),
             lastActivity: Date.now(),
             nextUserNumber: 1,
-            videoID: "2H0r81kv5GA"
+            // videoID: "2H0r81kv5GA"
+            videoID: "zt3F7kRB5ik",
+            status: "paused",
+            videoTime: 0,
+            timeUpdatedAt: Date.now(),
         };
 
         sessions.set(id, session);
@@ -179,9 +183,9 @@ io.on("connection", (socket) => {
         // if the session was about to close down, stop that
         if (session.deletionTimer) {
             clearTimeout(session.deletionTimer);
-            // needs a new owner, too. give it 1 second to set up the newcomer first
+            // needs a new host, too. give it 1 second to set up the newcomer first
             setTimeout(() => {
-                chooseNewOwner(session.id);
+                chooseNewHost(session.id);
             }, 1_000);
         }
 
@@ -198,13 +202,13 @@ io.on("connection", (socket) => {
             joinedAt: Date.now()
         }
 
-        // owner is only null at the very start, when the session creator comes in
-        if (!session.owner) {
-            session.owner = clientID;
-        // if the owner left, ownerReconnectGrace gives them a short window to return
-        } else if (ownerReconnectGrace && session.owner === clientID) {
+        // host is only null at the very start, when the session creator comes in
+        if (!session.host) {
+            session.host = clientID;
+        // if the host left, hostReconnectGrace gives them a short window to return
+        } else if (hostReconnectGrace && session.host === clientID) {
             // console.log("we try to clear the timeout");
-            clearTimeout(ownerReconnectGrace);
+            clearTimeout(hostReconnectGrace);
         }
         session.members.set(socket.id, client);
         session.memberToSocket.set(client.id, socket.id);
@@ -242,12 +246,27 @@ io.on("connection", (socket) => {
     });
 
     //--
-    socket.on("load-request", (video: string) => {
+    socket.on("load-request", (video: string, token: string) => {
+        if (!token) return;
+
+        let data;
+
+        try {
+            data = jwt.verify(token, SECRET) as { clientID: string };
+        } catch {
+            return;
+        }
+        
         const session = getSession(socket.id);
         if (!session) return;
+
+        if (session.host != data.clientID) return;
         
         session.videoID = video;
-        io.to(session.id).emit("load-order", session.videoID);
+        session.videoTime = 0;
+        session.timeUpdatedAt = Date.now();
+        session.status = "paused";
+        io.to(session.id).emit("load-order", session.videoID, session.status, session.videoTime);
     });    
     
     //--
@@ -255,13 +274,14 @@ io.on("connection", (socket) => {
         // console.log("video fetch arrived");
         const session = getSession(socket.id);
         if (!session) return;
-    
-        socket.emit("load-order", session.videoID);
+        
+        const time = session.videoTime + (Date.now() - session.timeUpdatedAt) / 1000; // cool trick
+        socket.emit("load-order", session.videoID, session.status, time);
         // console.log("video fetch succeeded");
     });    
     
     //--
-    socket.on("check-ownership", (token: string) => {
+    socket.on("check-hostship", (token: string) => {
         if (!token) return;
 
         let data;
@@ -275,11 +295,11 @@ io.on("connection", (socket) => {
         const session = getSession(socket.id);
         if (!session) return;
 
-        if (session.owner === data.clientID) socket.emit("become-owner");
+        if (session.host === data.clientID) socket.emit("become-host");
     });
     
     //--
-    socket.on("change-owner", (token: string, clientID) => {
+    socket.on("change-host", (token: string, clientID) => {
         if (!token) return;
 
         let data;
@@ -293,13 +313,49 @@ io.on("connection", (socket) => {
         const session = getSession(socket.id);
         if (!session) return;
 
-        if (session.owner === data.clientID) {
-            const newOwnerSocket: string | undefined = session.memberToSocket.get(clientID);
-            if (!newOwnerSocket) return;
-            session.owner = clientID;
-            io.to(newOwnerSocket).emit("become-owner");
-            socket.emit("unbecome-owner");
+        if (session.host === data.clientID) {
+            const newHostSocket: string | undefined = session.memberToSocket.get(clientID);
+            if (!newHostSocket) return;
+            session.host = clientID;
+            io.to(newHostSocket).emit("become-host");
+            socket.emit("unbecome-host");
         }
+    });
+
+    //--
+    socket.on("play-video", (time: any) => {
+        // console.log("___________ video data ___________");
+        // console.log(typeof(time));
+        // console.log(time);
+        const sessionID = socketToSession.get(socket.id);
+        if (!sessionID) return;
+        const session = sessions.get(sessionID);
+        if (!session) return;
+
+        session.videoTime = time;
+        session.timeUpdatedAt = Date.now();
+        socket.to(sessionID).emit("play-video", time);
+    });
+
+    //--
+    socket.on("pause-video", (time: any) => {
+        const sessionID = socketToSession.get(socket.id);
+        if (!sessionID) return;
+        const session = sessions.get(sessionID);
+        if (!session) return;
+
+        session.status = "paused";
+        session.videoTime = time;
+        socket.to(sessionID).emit("pause-video", time);
+    });
+
+    //--
+    socket.on("fetch-time", () => {
+        const session = getSession(socket.id);
+        if (!session) return;
+
+        const time = session.videoTime + (Date.now() - session.timeUpdatedAt) / 1000;
+        socket.emit("send-time", time);
     });
 
     //--
