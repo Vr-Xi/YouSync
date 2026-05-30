@@ -25,7 +25,7 @@ type Session = {
     videoID: string,
     status: string,
     videoTime: number,
-    timeUpdatedAt: number,
+    timeUpdatedAt: number | null,
 };
 
 type Client = {
@@ -163,7 +163,7 @@ io.on("connection", (socket) => {
             videoID: "zt3F7kRB5ik",
             status: "paused",
             videoTime: 0,
-            timeUpdatedAt: Date.now(),
+            timeUpdatedAt: null,
         };
 
         sessions.set(id, session);
@@ -264,7 +264,6 @@ io.on("connection", (socket) => {
         
         session.videoID = video;
         session.videoTime = 0;
-        session.timeUpdatedAt = Date.now();
         session.status = "paused";
         io.to(session.id).emit("load-order", session.videoID, session.status, session.videoTime);
     });    
@@ -275,8 +274,8 @@ io.on("connection", (socket) => {
         const session = getSession(socket.id);
         if (!session) return;
         
-        const time = session.videoTime + (Date.now() - session.timeUpdatedAt) / 1000; // cool trick
-        socket.emit("load-order", session.videoID, session.status, time);
+
+        socket.emit("load-order", session.videoID);
         // console.log("video fetch succeeded");
     });    
     
@@ -334,7 +333,7 @@ io.on("connection", (socket) => {
 
         session.videoTime = time;
         session.timeUpdatedAt = Date.now();
-        socket.to(sessionID).emit("play-video", time);
+        socket.to(sessionID).emit("video-play-order", time);
     });
 
     //--
@@ -346,7 +345,8 @@ io.on("connection", (socket) => {
 
         session.status = "paused";
         session.videoTime = time;
-        socket.to(sessionID).emit("pause-video", time);
+        session.timeUpdatedAt = null;
+        socket.to(sessionID).emit("video-pause-order", time);
     });
 
     //--
@@ -354,8 +354,11 @@ io.on("connection", (socket) => {
         const session = getSession(socket.id);
         if (!session) return;
 
-        const time = session.videoTime + (Date.now() - session.timeUpdatedAt) / 1000;
-        socket.emit("send-time", time);
+        let time;
+
+        if (!session.timeUpdatedAt) time = session.videoTime;
+        else time = session.videoTime + (Date.now() - session.timeUpdatedAt) / 1000; // cool trick
+        socket.emit("send-time", time, session.status);
     });
 
     //--
