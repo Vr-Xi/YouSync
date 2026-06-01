@@ -9,18 +9,14 @@ const VideoPlayer = () => {
     const [ videoID, setVideoID ] = useState<string | null>(null);
     const suppressPlay = useRef<boolean>(false);
     const suppressPause = useRef<boolean>(false);
-    const suppressEmit = useRef<boolean>(false);
     const newArrival = useRef<boolean>(true);
-    const newArrivalStatus = useRef<string | null>(null);
     const newArrivalTime = useRef<number | null>(null);
+    const serversideStatus = useRef<string | null>(null);
     const suppressInvisibleEmits = useRef<boolean>(false);
 
     const handleReady = (event: YouTubeEvent) => {
         console.log("Player ready!");
         playerRef.current = event.target;
-        console.log(playerRef.current);
-        // playerRef.current?.seekTo(newArrivalTime.current, false);
-        socket.emit("fetch-time");
     }
 
     const handleLoadOrder = (video: string) => {
@@ -28,17 +24,19 @@ const VideoPlayer = () => {
     }
 
     const handlePlay = () => {
-        console.log("handlePlay was called");
+        serversideStatus.current = "playing";
+        if (suppressInvisibleEmits.current) return; // stop outright.
+
         if (suppressPlay.current) {
-            // console.log("play emit was suppressed");
             suppressPlay.current = false;
-            // console.log("suppressPlay was set to false");
             return;
         }
         
         if (newArrival.current) {
-            if (newArrivalStatus.current === "paused") playerRef.current?.pauseVideo();
+            socket.emit("fetch-time");
+            if (serversideStatus.current === "paused") playerRef.current?.pauseVideo();
             newArrival.current = false;
+            socket.emit("update-time");
             return;
         };
 
@@ -47,11 +45,12 @@ const VideoPlayer = () => {
     };
     
     const handlePause = () => {
-        console.log("handlePause was called");
+        serversideStatus.current = "paused";
+        
+        if (suppressInvisibleEmits.current) return; // stop outright.
+
         if (suppressPause.current) {
-            console.log("pause emit was suppressed");
             suppressPause.current = false;
-            // console.log("suppressPause was set to false");
             return;
         }
 
@@ -64,9 +63,7 @@ const VideoPlayer = () => {
     // };
 
     const onPlayOrder = (time: number) => {
-        console.log("onPlayOrder was called");
         if (playerRef.current) {
-            // console.log("suppressPlay was set to true");
             playerRef.current.seekTo(time, true);
             suppressPlay.current = true;
             playerRef.current.playVideo();
@@ -74,9 +71,7 @@ const VideoPlayer = () => {
     }
 
     const onPauseOrder = (time: number) => {
-        console.log("onPauseOrder was called");
         if (playerRef.current) {
-            // console.log("suppressPause was set to true");
             playerRef.current.seekTo(time, true);
             suppressPause.current = true;
             playerRef.current.pauseVideo();
@@ -85,14 +80,14 @@ const VideoPlayer = () => {
     }
 
     const seekToTime = (time: number, status: string) => {
-        console.log("Fetch-time returned: " + time);
+        // console.log("Fetch-time returned: " + time);
         if (playerRef.current) {
             if (time > 0) { // needed to address an edge case, where the player would otherwise auto-play for the first person that comes into a session
                 playerRef.current.seekTo(time, true);
             }
         }
         
-        newArrivalStatus.current = status;
+        serversideStatus.current = status;
         newArrivalTime.current = time;
     }
 
@@ -129,14 +124,24 @@ const VideoPlayer = () => {
     }, []);
 
     useEffect(() => {
+        // there is weird standard behavior, where a tab that's muted AND currently isn't directly looked at by the user, will automatically pause the video
+        // this is a problem, because it will cause emits
+        // so: what if there's a user in a session that mutes their video, and goes to another browser tab to do something else?
+        // the answer is: that user will constantly re-emit a pause order, with their own timestamp, resetting the entire room to their own time, over and over
+        // this entire useEffect() is dedicated to solving that.
+
         const onVisibilityChange = () => {
             const visibility = document.visibilityState;
-            // if (visibility === "hidden") suppressInvisibleEmits.current = true;
-            // else suppressInvisibleEmits.current = false;
-            // if (visibility === "hidden") suppressPause.current = true;
-            // else suppressPause.current = false;
-            // console.log(visibility);
-            return visibility;
+            const player = playerRef.current;
+            if (visibility === "hidden" && player.isMuted()) { 
+                suppressInvisibleEmits.current = true;
+                // console.log("player tried to do the sneaky thing");
+            }
+            else if (visibility === "visible" && player.isMuted()) {
+                suppressInvisibleEmits.current = false;
+                suppressPlay.current = true;
+                socket.emit("fetch-time");
+            }
         }
 
 

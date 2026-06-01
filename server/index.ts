@@ -160,8 +160,9 @@ io.on("connection", (socket) => {
             lastActivity: Date.now(),
             nextUserNumber: 1,
             // videoID: "2H0r81kv5GA"
-            videoID: "zt3F7kRB5ik",
-            status: "paused",
+            // videoID: "zt3F7kRB5ik",
+            videoID: "8gKJ9mMPuIQ",
+            status: "unstarted",
             videoTime: 0,
             timeUpdatedAt: null,
         };
@@ -324,15 +325,17 @@ io.on("connection", (socket) => {
     //--
     socket.on("play-video", (time: any) => {
         // console.log("___________ video data ___________");
-        // console.log(typeof(time));
-        // console.log(time);
         const sessionID = socketToSession.get(socket.id);
         if (!sessionID) return;
         const session = sessions.get(sessionID);
         if (!session) return;
 
+        // console.log("time updated at: " + session.timeUpdatedAt);
+
+        session.status = "playing";
         session.videoTime = time;
         session.timeUpdatedAt = Date.now();
+        // console.log("time updated at: " + session.timeUpdatedAt);
         socket.to(sessionID).emit("video-play-order", time);
     });
 
@@ -359,6 +362,20 @@ io.on("connection", (socket) => {
         if (!session.timeUpdatedAt) time = session.videoTime;
         else time = session.videoTime + (Date.now() - session.timeUpdatedAt) / 1000; // cool trick
         socket.emit("send-time", time, session.status);
+    });
+
+    //--
+    socket.on("update-time", () => {
+        const session = getSession(socket.id);
+        if (!session) return;
+
+        if (session.timeUpdatedAt) return;
+
+        console.log("update-time fired");
+        session.timeUpdatedAt = Date.now();
+
+        // handles an edge case, where a new arriver can't make play-emits, but the server needs to track the fact that the video was played anyway.
+        // because what timestamp new arrivals should seek to is determined by math including timeUpdatedAt
     });
 
     //--
