@@ -10,6 +10,7 @@ function WatchRoom() {
     const navigate = useNavigate();
     const [ memberList, setMembers ] = useState<[string, string][]>([]);
     const [ isHost, changeHostship ] = useState<boolean>(false);
+    const [ nickname, changeNickname ] = useState<string>("");
 
 
 
@@ -42,16 +43,16 @@ function WatchRoom() {
     useEffect(() => {
 
         // managing nickname persistence across page reload
-        const prevSessionID = sessionStorage.getItem("prevSessionID");
-        if (prevSessionID != sessionID) sessionStorage.clear();
-        sessionStorage.setItem("prevSessionID", sessionID);
+        // const prevSessionID = sessionStorage.getItem("prevSessionID");
+        // if (prevSessionID != sessionID) sessionStorage.clear();
+        // sessionStorage.setItem("prevSessionID", sessionID);
 
-        const nickname = sessionStorage.getItem("nickname");
+        // const nickname = sessionStorage.getItem("nickname");
         //
-        if (!sessionStorage.getItem("clientID")) sessionStorage.setItem("clientID", crypto.randomUUID())
-        const clientID = sessionStorage.getItem("clientID");
+        // if (!sessionStorage.getItem("clientID")) sessionStorage.setItem("clientID", crypto.randomUUID())
+        // const clientID = sessionStorage.getItem("clientID");
 
-        socket.emit("join-session", sessionID, clientID, nickname);
+        socket.emit("join-session", sessionID, sessionStorage.getItem("token"));
         socket.emit("fetch-members");
         socket.emit("fetch-video");
 
@@ -63,7 +64,7 @@ function WatchRoom() {
             setMembers(members);
         })
         socket.on("send-nickname", (newNickname) => {
-            sessionStorage.setItem("nickname", newNickname);
+            changeNickname(newNickname);
         })
         socket.on("auth-token", (token: string) => {
             sessionStorage.setItem("token", token);
@@ -109,8 +110,10 @@ function WatchRoom() {
                     return (
                         <li key={entry[0]}>
                             {entry[1]}
-                            {(isHost && entry[0] != sessionStorage.getItem("clientID")) && <button onClick={() => handleMakeHost(entry[0])}>Make Host</button>}
-                            {(isHost && entry[0] != sessionStorage.getItem("clientID")) && <button>Kick</button>}
+                            {(isHost && entry[1] != nickname) && <button onClick={() => handleMakeHost(entry[0])}>Make Host</button>}
+                            {(isHost && entry[1] != nickname) && <button>Kick</button>}
+                            {/* {isHost && <button onClick={() => handleMakeHost(entry[0])}>Make Host</button>} */}
+                            {/* {isHost && <button>Kick</button>} */}
                         </li>
                     )
                 })}

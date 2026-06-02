@@ -15,7 +15,7 @@ const VideoPlayer = () => {
     const suppressInvisibleEmits = useRef<boolean>(false);
 
     const handleReady = (event: YouTubeEvent) => {
-        console.log("Player ready!");
+        // console.log("Player ready!");
         playerRef.current = event.target;
     }
 
@@ -25,6 +25,7 @@ const VideoPlayer = () => {
 
     const handlePlay = () => {
         serversideStatus.current = "playing";
+
         if (suppressInvisibleEmits.current) return; // stop outright.
 
         if (suppressPlay.current) {
@@ -50,7 +51,6 @@ const VideoPlayer = () => {
         if (suppressInvisibleEmits.current) return; // stop outright.
 
         if (suppressPause.current) {
-            suppressPause.current = false;
             return;
         }
 
@@ -63,21 +63,31 @@ const VideoPlayer = () => {
     // };
 
     const onPlayOrder = (time: number) => {
+        if (playerRef.current.getPlayerState() === 5) {
+            // console.log("Player was ordered to play, but refused because it was unstarted.");
+            return;
+        };
+
         if (playerRef.current) {
-            playerRef.current.seekTo(time, true);
             suppressPlay.current = true;
+            playerRef.current.seekTo(time, true);
             playerRef.current.playVideo();
-        }
-    }
+        };
+    };
 
     const onPauseOrder = (time: number) => {
+        if (playerRef.current.getPlayerState() === 5) {
+            // console.log("Player was ordered to pause, but refused because it was unstarted.");
+            return;
+        };
+
         if (playerRef.current) {
-            playerRef.current.seekTo(time, true);
             suppressPause.current = true;
+            playerRef.current.seekTo(time, true);
             playerRef.current.pauseVideo();
             suppressPause.current = false; // needed to solve an edge case, where every second intentional pause emit would be swallowed otherwise
-        }
-    }
+        };
+    };
 
     const seekToTime = (time: number, status: string) => {
         // console.log("Fetch-time returned: " + time);
@@ -110,7 +120,6 @@ const VideoPlayer = () => {
     }, []);
 
     useEffect(() => {
-
         socket.on("video-play-order", onPlayOrder);
         socket.on("video-pause-order", onPauseOrder);
         socket.on("send-time", seekToTime);
@@ -133,6 +142,7 @@ const VideoPlayer = () => {
         const onVisibilityChange = () => {
             const visibility = document.visibilityState;
             const player = playerRef.current;
+            if (!player) return;
             if (visibility === "hidden" && player.isMuted()) { 
                 suppressInvisibleEmits.current = true;
                 // console.log("player tried to do the sneaky thing");
