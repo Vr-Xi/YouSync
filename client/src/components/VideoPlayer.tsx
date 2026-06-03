@@ -24,7 +24,6 @@ const VideoPlayer = () => {
     }
 
     const handlePlay = () => {
-        serversideStatus.current = "playing";
 
         if (suppressInvisibleEmits.current) return; // stop outright.
 
@@ -35,6 +34,7 @@ const VideoPlayer = () => {
         
         if (newArrival.current) {
             socket.emit("fetch-time");
+            console.log(serversideStatus.current);
             if (serversideStatus.current === "paused") playerRef.current?.pauseVideo();
             newArrival.current = false;
             socket.emit("update-time");
@@ -43,10 +43,11 @@ const VideoPlayer = () => {
 
         const time = Math.round(playerRef.current?.getCurrentTime() * 100) / 100;
         socket.emit("play-video", time);
+
+        serversideStatus.current = "playing";
     };
     
     const handlePause = () => {
-        serversideStatus.current = "paused";
         
         if (suppressInvisibleEmits.current) return; // stop outright.
 
@@ -56,6 +57,8 @@ const VideoPlayer = () => {
 
         const time = Math.round(playerRef.current?.getCurrentTime() * 100) / 100;
         socket.emit("pause-video", time);
+
+        serversideStatus.current = "paused";
     };
 
     // const handleStateChange = (event: { data: number } ) => {
@@ -83,22 +86,35 @@ const VideoPlayer = () => {
 
         if (playerRef.current) {
             suppressPause.current = true;
+            setTimeout(() => {
+                suppressPause.current = false; //fine, I yield. I don't know how else to *completely* suppress the mystery emits. only this works. damn it.
+            }, 1_000);
             playerRef.current.seekTo(time, true);
             playerRef.current.pauseVideo();
-            suppressPause.current = false; // needed to solve an edge case, where every second intentional pause emit would be swallowed otherwise
+            // suppressPause.current = false; // needed to solve an edge case, where every second intentional pause emit would be swallowed otherwise
         };
     };
 
     const seekToTime = (time: number, status: string) => {
         // console.log("Fetch-time returned: " + time);
-        if (playerRef.current) {
-            if (time > 0) { // needed to address an edge case, where the player would otherwise auto-play for the first person that comes into a session
-                playerRef.current.seekTo(time, true);
-            }
+        const player = playerRef.current;
+
+        serversideStatus.current = status; // no harm in setting these either way, I think. Might not need em
+        newArrivalTime.current = time;
+
+        if (!player) return;
+
+        if (time > 0) { // needed to address an edge case, where the player would otherwise auto-play for the first person that comes into a session
+            playerRef.current.seekTo(time, true);
         }
         
-        serversideStatus.current = status;
-        newArrivalTime.current = time;
+        if (serversideStatus.current === "paused") {
+            suppressPause.current = true;
+            setTimeout(() => {
+                suppressPause.current = false; // hate, hate, hate
+            }, 1_000);
+            player.pauseVideo();
+        }
     }
 
     // const canEmit = () => {
@@ -169,7 +185,7 @@ const VideoPlayer = () => {
         <YouTube
             videoId={videoID}
             onReady={handleReady}
-            // onStateChange={handleStateChange}
+            // onStateChange={(e) => console.log(e.data)} // enemy
             onPlay={handlePlay}
             onPause={handlePause}
             opts={{ width: "640", height: "390", playerVars: { autoplay: 0 } }}

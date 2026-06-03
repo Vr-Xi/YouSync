@@ -29,6 +29,7 @@ type Session = {
     status: string,
     videoTime: number,
     timeUpdatedAt: number | null,
+    actionID: number;
 };
 
 type Client = {
@@ -168,7 +169,7 @@ function disconnectHelper(socketID: string): void {
 
 
 io.on("connection", (socket) => {
-    console.log("User connected:", socket.id);
+    // console.log("User connected:", socket.id);
 
     //--
     socket.on("create-session", () => {
@@ -194,11 +195,12 @@ io.on("connection", (socket) => {
             status: "unstarted",
             videoTime: 0,
             timeUpdatedAt: null,
+            actionID: 1,
         };
 
         sessions.set(id, session);
         socket.emit("session-created", id);
-        console.log(`Created session ${id}`);
+        // console.log(`Created session ${id}`);
 
     });
 
@@ -251,7 +253,7 @@ io.on("connection", (socket) => {
         } else {
             const nickname = chooseNewNickname(sessionID);
             if (typeof(nickname) != "string") {
-                console.log("Nickname Generation Failure");
+                // console.log("Nickname Generation Failure");
                 return;
             }
 
@@ -393,6 +395,14 @@ io.on("connection", (socket) => {
 
         // console.log("time updated at: " + session.timeUpdatedAt);
 
+        const clientID = session.socketToClientID.get(socket.id);
+        if (!clientID) return;
+        const client = session.clients.get(clientID);
+        if (!client) return;
+
+        console.log(`${session.actionID}: ${client.nickname} emits a play order`);
+        session.actionID++;
+
         session.status = "playing";
         session.videoTime = time;
         session.timeUpdatedAt = Date.now();
@@ -406,6 +416,15 @@ io.on("connection", (socket) => {
         if (!sessionID) return;
         const session = sessions.get(sessionID);
         if (!session) return;
+
+        
+        const clientID = session.socketToClientID.get(socket.id);
+        if (!clientID) return;
+        const client = session.clients.get(clientID);
+        if (!client) return;
+
+        console.log(`${session.actionID}: ${client.nickname} emits a pause order`);        
+        session.actionID++;
 
         session.status = "paused";
         session.videoTime = time;
@@ -452,7 +471,7 @@ io.on("connection", (socket) => {
     socket.on("disconnect", () => {
         const session = getSession(socket.id);
         if (!session) return;
-        console.log("User disconnected:", socket.id);
+        // console.log("User disconnected:", socket.id);
         disconnectHelper(socket.id);
     });
 
