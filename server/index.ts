@@ -437,11 +437,18 @@ io.on("connection", (socket) => {
         const session = getSession(socket.id);
         if (!session) return;
 
-        let time;
+        // if (!session.timeUpdatedAt) time = session.videoTime;
+        // else time = session.videoTime + (Date.now() - session.timeUpdatedAt) / 1000; // cool trick, but should be handled client-side, to cancel out communication delay
+        socket.emit("send-time", session.status, session.videoTime, session.timeUpdatedAt);
+    });
+    
+    //--
+    socket.on("request-sync-check", () => {
+        // same as fetch-time, but targeting a different client-side function
+        const session = getSession(socket.id);
+        if (!session) return;
 
-        if (!session.timeUpdatedAt) time = session.videoTime;
-        else time = session.videoTime + (Date.now() - session.timeUpdatedAt) / 1000; // cool trick
-        socket.emit("send-time", time, session.status);
+        socket.emit("sync-check", session.status, session.videoTime, session.timeUpdatedAt);
     });
 
     //--

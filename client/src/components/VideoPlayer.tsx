@@ -17,6 +17,7 @@ const VideoPlayer = () => {
     const handleReady = (event: YouTubeEvent) => {
         // console.log("Player ready!");
         playerRef.current = event.target;
+        console.log(playerRef.current);
     }
 
     const handleLoadOrder = (video: string) => {
@@ -34,7 +35,6 @@ const VideoPlayer = () => {
         
         if (newArrival.current) {
             socket.emit("fetch-time");
-            console.log(serversideStatus.current);
             if (serversideStatus.current === "paused") playerRef.current?.pauseVideo();
             newArrival.current = false;
             socket.emit("update-time");
@@ -95,7 +95,7 @@ const VideoPlayer = () => {
         };
     };
 
-    const seekToTime = (time: number, status: string) => {
+    const seekToTime = (status: string, time: number, updatedAt: number) => {
         // console.log("Fetch-time returned: " + time);
         const player = playerRef.current;
 
@@ -103,6 +103,8 @@ const VideoPlayer = () => {
         newArrivalTime.current = time;
 
         if (!player) return;
+
+        if (updatedAt) time = time + (Date.now() - updatedAt) / 1000;
 
         if (time > 0) { // needed to address an edge case, where the player would otherwise auto-play for the first person that comes into a session
             playerRef.current.seekTo(time, true);
@@ -117,6 +119,19 @@ const VideoPlayer = () => {
         }
     }
 
+    function handleSyncCheck(status: string, time: number, updatedAt: number) {
+        const player = playerRef.current;
+        if (!player) return;
+        if (status != "playing") return;
+
+        time = time + (Date.now() - updatedAt) / 1000;
+
+        const drift = time - player.getCurrentTime();
+
+        if (Math.abs(drift) > 2) {
+            playerRef.current.seekTo(time, true);
+        }
+    };
     // const canEmit = () => {
         // May need to make this.
     // };
@@ -126,24 +141,26 @@ const VideoPlayer = () => {
 
     useEffect(() => {
 
-        // console.log("suppressPlay is: " + suppressPlay.current);
-        // console.log("suppressPause is: " + suppressPause.current);
         socket.on("load-order", handleLoadOrder);
+        
 
         return () => {
             socket.off("load-order");
         }
+
     }, []);
 
     useEffect(() => {
         socket.on("video-play-order", onPlayOrder);
         socket.on("video-pause-order", onPauseOrder);
         socket.on("send-time", seekToTime);
+        socket.on("sync-check", handleSyncCheck);
 
         return () => {
             socket.off("video-play-order", onPlayOrder);
             socket.off("video-pause-order", onPauseOrder);
             socket.off("send-time", seekToTime);
+            socket.off("synch-check", handleSyncCheck);
         };
 
     }, []);
@@ -177,6 +194,40 @@ const VideoPlayer = () => {
             document.removeEventListener("visibilitychange", onVisibilityChange);
         }
     }, []);
+
+
+    useEffect(() => {
+        const intervalID = window.setInterval(() => {
+            if (!playerRef.current) return;
+            if (newArrival.current) return;
+
+            socket.emit("request-sync-check");
+        }, 5000);
+
+        return () => {
+            window.clearInterval(intervalID);
+        };
+
+
+    }, []);
+
+    // dev testing
+    // function devPlusTen() {
+    //     const player = playerRef.current;
+    //     (!player);
+
+    //     suppressPlay.current = true;
+    //     player.seekTo(playerRef.current.getCurrentTime() + 10);
+    // };
+
+    
+    // function devMinusTen() {
+    //     const player = playerRef.current;
+    //     (!player);
+
+    //     suppressPlay.current = true;
+    //     player.seekTo(playerRef.current.getCurrentTime() - 10);
+    // };
 
 
     if (!videoID) return <div style={{ width: "640px", height: "390px", backgroundColor: "rgba(0,0,25,1)" }}/>

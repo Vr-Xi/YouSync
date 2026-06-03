@@ -79,8 +79,9 @@ function WatchRoom() {
 
 
         return () => {
-            // needed for in-page actions to trigger socket disconnect
+            // leave-session is needed so that in-page actions correctly trigger socket disconnect
             // example: using the "go to previous page" button in browser would usually NOT disconnect
+            // but that would mess up my internal cleanup. so we do it manually here
             socket.emit("leave-session");
 
             socket.off("session-invalid");
@@ -108,7 +109,12 @@ function WatchRoom() {
             <ul>
                 {memberList.map((entry: [string, string]) => {
                     return (
-                        <li key={entry[0]}>
+                        <li 
+                            key={entry[0]} 
+                            style={{
+                                backgroundColor: (entry[1] === nickname) ? "green" : "none",
+                            }}
+                        >
                             {entry[1]}
                             {(isHost && entry[1] != nickname) && <button onClick={() => handleMakeHost(entry[0])}>Make Host</button>}
                             {(isHost && entry[1] != nickname) && <button>Kick</button>}
