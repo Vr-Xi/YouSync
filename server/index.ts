@@ -4,6 +4,7 @@ import { Server } from "socket.io";
 import cors from "cors";
 import jwt from "jsonwebtoken";
 import "dotenv/config";
+import { db } from "./db/db.js";
 
 const app = express();
 app.use(cors());
@@ -12,6 +13,57 @@ const io = new Server(server, {
     cors: {origin: "*"},
 });
 const SECRET = process.env.JWT_SECRET as string;
+
+
+// db -------------------------
+
+// const result = await db.query("SELECT NOW()");
+// console.log(result.rows[0]);
+
+async function roomEntry(roomID: string) {
+    await db.query(
+        `
+        INSERT INTO rooms (id)
+        VALUES ($1)
+        ON COnFLICT (id) DO UPDATE
+        SET last_active_at = NOW()
+        `,
+        [roomID]
+    );
+};
+
+async function roomUpdate(roomID: string) {
+    await db.query(
+        `
+        UPDATE rooms
+        SET last_active_at = NOW()
+        WHERE id = $1
+        `,
+        [roomID]
+    );
+};
+
+async function roomExists(roomID: string) {
+
+    const result = await db.query(
+        `
+        SELECT 1
+        FROM rooms
+        WHERE id = $1
+        `,
+        [roomID]
+    );
+
+    return result.rows.length > 0;
+};
+
+// ensureRoom("abcdefg")
+//     .then(() => db.query("SELECT * FROM rooms"))
+//     .then(result => console.log(result.rows));
+
+
+// db end ---------------------
+
 
 type Session = {
     id: string,
@@ -29,7 +81,7 @@ type Session = {
     status: string,
     videoTime: number,
     timeUpdatedAt: number | null,
-    actionID: number;
+    actionID: number,
 };
 
 type Client = {
@@ -37,20 +89,31 @@ type Client = {
     nickname: string,
     role: string,
     joinedAt: number,
-}
+};
 
 const sessions: Map<string, Session> = new Map();
 const socketToSession: Map<string, string> = new Map();
 let hostReconnectGrace: NodeJS.Timeout;
-const reconnections: Map<string, NodeJS.Timeout> = new Map();
+// const reconnections: Map<string, NodeJS.Timeout> = new Map();
 
-function generateSessionId(): string {
-    return Math.random().toString(36).substring(2, 8);
-}
+function generateID() {
+    return Math.random().toString(36).substring(2, 10);
+};
+
+async function generateSessionId(): Promise<string> {
+
+    let id = generateID();
+
+    while ( sessions.has(id) || await roomExists(id)) {
+        id = generateID();
+    };
+    
+    return id; 
+};
 
 function issueToken(clientID: string ) {
     return jwt.sign({ clientID }, SECRET, { expiresIn: "24h" });
-}
+};
 
 function getNicknames(sessionID: string) {
     const session = sessions.get(sessionID);
@@ -60,10 +123,10 @@ function getNicknames(sessionID: string) {
 
     for (const member of session.activeClients.values()) {
         result.push([member.id, member.nickname]);
-    }
+    };
 
     return result;
-}
+};
 
 function getSession(socketID: string): Session | undefined {
     const sessionID = socketToSession.get(socketID);
@@ -172,11 +235,8 @@ io.on("connection", (socket) => {
     // console.log("User connected:", socket.id);
 
     //--
-    socket.on("create-session", () => {
-        let id = generateSessionId();
-        while (sessions.has(id)) {
-            id = generateSessionId();
-        }
+    socket.on("create-session", async () => {
+        let id = await generateSessionId();
 
         const session: Session = {
             id,
@@ -202,6 +262,7 @@ io.on("connection", (socket) => {
         socket.emit("session-created", id);
         // console.log(`Created session ${id}`);
 
+        roomEntry(session.id);
     });
 
     //--
@@ -290,6 +351,7 @@ io.on("connection", (socket) => {
         session.lastActivity = Date.now();
 
         socket.emit("auth-token", token);
+        roomUpdate(session.id);
     });
 
     //--
@@ -408,6 +470,8 @@ io.on("connection", (socket) => {
         session.timeUpdatedAt = Date.now();
         // console.log("time updated at: " + session.timeUpdatedAt);
         socket.to(sessionID).emit("video-play-order", time);
+
+        roomUpdate(sessionID);
     });
 
     //--
@@ -430,6 +494,8 @@ io.on("connection", (socket) => {
         session.videoTime = time;
         session.timeUpdatedAt = null;
         socket.to(sessionID).emit("video-pause-order", time);
+
+        roomUpdate(sessionID);
     });
 
     //--

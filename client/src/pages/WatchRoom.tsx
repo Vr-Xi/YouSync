@@ -15,7 +15,7 @@ function WatchRoom() {
 
 
 
-    const handleSubmit = (e: any) => {
+    const handleVideoSubmit = (e: any) => {
         e.preventDefault();
         videoID.current = extractVideoId(videoUrl);
         socket.emit("load-request", videoID.current, sessionStorage.getItem("token"));
@@ -39,6 +39,10 @@ function WatchRoom() {
     const handleMakeHost = (clientID: string) => {
         socket.emit("change-host", sessionStorage.getItem("token"), clientID);
     };
+
+    // const handleNicknameSubmit = () => {
+        
+    // }; 
 
     useEffect(() => {
 
@@ -96,7 +100,7 @@ function WatchRoom() {
     return (
         <div>
             <h1>Watch Room - Session ID: {sessionID} </h1>
-            {isHost && <form onSubmit={handleSubmit}>
+            {isHost && <form onSubmit={handleVideoSubmit}>
                 <input 
                     type="text" 
                     value={videoUrl}
