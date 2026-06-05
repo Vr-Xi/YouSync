@@ -17,7 +17,7 @@ const VideoPlayer = () => {
     const handleReady = (event: YouTubeEvent) => {
         // console.log("Player ready!");
         playerRef.current = event.target;
-        console.log(playerRef.current);
+        // console.log(playerRef.current);
     }
 
     const handleLoadOrder = (video: string) => {

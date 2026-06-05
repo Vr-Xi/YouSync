@@ -3,6 +3,14 @@ import { useParams, useNavigate } from "react-router-dom";
 import VideoPlayer from "../components/VideoPlayer.tsx";
 import socket from "../socket.ts";
 
+type ChatMessage = {
+    id: number,
+    createdAt: number,
+    clientID: string,
+    nickname: string,
+    message: string,
+};
+
 function WatchRoom() {
     const { sessionID } = useParams<string>();
     const [ videoUrl, setVideoUrl ] = useState<string>("");
@@ -11,9 +19,9 @@ function WatchRoom() {
     const [ memberList, setMembers ] = useState<[string, string][]>([]);
     const [ isHost, changeHostship ] = useState<boolean>(false);
     const [ nickname, changeNickname ] = useState<string>("");
-
-
-
+    const [ pendingNickname, changePendingNickname ] = useState<string>("");
+    const [ chatMessage, changeChatMessage ] = useState<string>("");
+    const [ chat, updateChat ] = useState<ChatMessage[]>([]);
 
     const handleVideoSubmit = (e: any) => {
         e.preventDefault();
@@ -40,9 +48,19 @@ function WatchRoom() {
         socket.emit("change-host", sessionStorage.getItem("token"), clientID);
     };
 
-    // const handleNicknameSubmit = () => {
-        
-    // }; 
+    const handleNicknameSubmit = (e: any) => {
+        e.preventDefault();
+        socket.emit("change-nickname", pendingNickname, sessionStorage.getItem("token"));
+    }; 
+
+    const handleChatMessage = (e: any) => {
+        e.preventDefault();
+        if (chatMessage === "") return;
+        if (chatMessage.length > 100) return;
+        console.log(chatMessage);
+        socket.emit("send-chat-message", chatMessage, sessionStorage.getItem("token"));
+        changeChatMessage("");
+    };
 
     useEffect(() => {
 
@@ -59,6 +77,7 @@ function WatchRoom() {
         socket.emit("join-session", sessionID, sessionStorage.getItem("token"));
         socket.emit("fetch-members");
         socket.emit("fetch-video");
+        socket.emit("fetch-chat-history");
 
 
         socket.on("session-invalid", () => {
@@ -69,6 +88,7 @@ function WatchRoom() {
         })
         socket.on("send-nickname", (newNickname) => {
             changeNickname(newNickname);
+            changePendingNickname(newNickname);
         })
         socket.on("auth-token", (token: string) => {
             sessionStorage.setItem("token", token);
@@ -79,6 +99,12 @@ function WatchRoom() {
         })
         socket.on("unbecome-host", () => {
             changeHostship(false);
+        });
+        socket.on("send-chat-history", (chat) => {
+            updateChat(chat);
+        });
+        socket.on("chat-message", (message: ChatMessage) => {
+            updateChat((prev) => [...prev, message]);
         });
 
 
@@ -94,7 +120,9 @@ function WatchRoom() {
             socket.off("auth-token");
             socket.off("become-host");
             socket.off("unbecome-host");
-        }
+            socket.off("send-chat-history");
+            socket.off("chat-message");
+        };
     }, []);
 
     return (
@@ -128,6 +156,44 @@ function WatchRoom() {
                     )
                 })}
             </ul>
+            <form onSubmit={handleNicknameSubmit}>
+                <input 
+                    type="text" 
+                    value={pendingNickname}
+                    onChange={(e) => changePendingNickname(e.target.value)}
+                    placeholder="Change your nickname"
+                />
+                <button type="submit">Change Nickname</button>
+            </form>
+            <div style={{
+                backgroundColor: "rgba(50,50,50,1)",
+                width: "200px",
+                height: "550px",
+                justifySelf: "center",
+            }}>
+                <ul style={{
+                    backgroundColor: "white",
+                    width: "200px",
+                    height: "450px",
+                    overflow: "auto",
+                }}>
+                    {chat.map( (entry) => {
+                        // entry[1] = Math.round(entry[0] * 100) / 100;
+                        return (
+                            <li key={entry.id}>{entry.createdAt} {entry.nickname}: {entry.message}</li>
+                        )
+                    })}
+                </ul>
+                <form onSubmit={handleChatMessage}>
+                    <input 
+                        type="text"
+                        value={chatMessage}
+                        onChange={(e) => changeChatMessage(e.target.value)}
+                        placeholder="Send a Chat message"
+                    />
+                    <button type="submit">Chat</button>
+                </form>
+            </div>
         </div>
     );
 }

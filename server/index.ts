@@ -73,6 +73,8 @@ type Session = {
     socketToClientID: Map<string, string>,
     clientIDToSocket: Map<string, string>,
     nicknames: Map<string, string>,
+    chat: Array<ChatMessage>,
+    chatMessageID: number,
     createdAt: number,
     lastActivity: number,
     nextUserNumber: number,
@@ -89,6 +91,14 @@ type Client = {
     nickname: string,
     role: string,
     joinedAt: number,
+};
+
+type ChatMessage = {
+    id: number,
+    createdAt: number,
+    clientID: string,
+    nickname: string,
+    message: string,
 };
 
 const sessions: Map<string, Session> = new Map();
@@ -133,7 +143,7 @@ function getSession(socketID: string): Session | undefined {
     if (!sessionID) return;
     const session = sessions.get(sessionID);
     return session;
-}
+};
 
 function chooseNewHost(sessionID: string) {
         const session = sessions.get(sessionID);
@@ -161,7 +171,7 @@ function chooseNewHost(sessionID: string) {
         if (!candidate) return;
         session.host = candidate.id;
         io.to(candidateSocket).emit("become-host");
-}
+};
 
 function chooseNewNickname(sessionID: string) {
     const session = sessions.get(sessionID);
@@ -175,6 +185,16 @@ function chooseNewNickname(sessionID: string) {
     };
 
     return newNickname;
+};
+
+function verifyIdentity(token: string) {
+    try {
+        const data = jwt.verify(token, SECRET) as { clientID: string };
+        return data.clientID;
+    } catch {
+        return; // reject invalid tokens
+    }
+
 };
 
 
@@ -246,6 +266,8 @@ io.on("connection", (socket) => {
             socketToClientID: new Map(),
             clientIDToSocket: new Map(),
             nicknames: new Map(),
+            chat: [],
+            chatMessageID: 0,
             createdAt: Date.now(),
             lastActivity: Date.now(),
             nextUserNumber: 1,
@@ -274,8 +296,6 @@ io.on("connection", (socket) => {
         };
 
         let token = inputToken;
-        let data;
-        let clientID;
         let client: Client;
 
         if (!token) {
@@ -285,13 +305,8 @@ io.on("connection", (socket) => {
             socket.emit("unbecome-host");
         };
 
-        try {
-            data = jwt.verify(token, SECRET) as { clientID: string };
-            clientID = data.clientID;
-        } catch {
-            // reject invalid tokens
-            return;
-        };
+        const clientID = verifyIdentity(token);
+        if (!clientID) return;
 
 
         // if the session was about to close down, stop that
@@ -316,7 +331,7 @@ io.on("connection", (socket) => {
             if (typeof(nickname) != "string") {
                 // console.log("Nickname Generation Failure");
                 return;
-            }
+            };
 
             client = {
                 id: clientID,
@@ -339,7 +354,7 @@ io.on("connection", (socket) => {
         // if the host left, hostReconnectGrace gives them a short window to return
         } else if (hostReconnectGrace && session.host === clientID) {
             clearTimeout(hostReconnectGrace);
-        }
+        };
 
         // socket.emit("session-info", {
         //     id: session.id,
@@ -375,18 +390,13 @@ io.on("connection", (socket) => {
     socket.on("load-request", (video: string, token: string) => {
         if (!token) return;
 
-        let data;
-
-        try {
-            data = jwt.verify(token, SECRET) as { clientID: string };
-        } catch {
-            return;
-        }
+        const clientID = verifyIdentity(token);
+        if (!clientID) return;
         
         const session = getSession(socket.id);
         if (!session) return;
 
-        if (session.host != data.clientID) return;
+        if (session.host != clientID) return;
         
         session.videoID = video;
         session.videoTime = 0;
@@ -409,42 +419,32 @@ io.on("connection", (socket) => {
     socket.on("check-hostship", (token: string) => {
         if (!token) return;
 
-        let data;
-
-        try {
-            data = jwt.verify(token, SECRET) as { clientID: string };
-        } catch {
-            return;
-        }
+        const clientID = verifyIdentity(token);
+        if (!clientID) return;
 
         const session = getSession(socket.id);
         if (!session) return;
 
-        if (session.host === data.clientID) socket.emit("become-host");
+        if (session.host === clientID) socket.emit("become-host");
     });
     
     //--
-    socket.on("change-host", (token: string, clientID) => {
+    socket.on("change-host", (token: string, newHostID) => {
         if (!token) return;
 
-        let data;
-
-        try {
-            data = jwt.verify(token, SECRET) as { clientID: string };
-        } catch {
-            return;
-        }
+        const clientID = verifyIdentity(token);
+        if (!clientID) return;
 
         const session = getSession(socket.id);
         if (!session) return;
 
-        if (session.host === data.clientID) {
-            const newHostSocket: string | undefined = session.clientIDToSocket.get(clientID);
+        if (session.host === clientID) {
+            const newHostSocket: string | undefined = session.clientIDToSocket.get(newHostID);
             if (!newHostSocket) return;
-            session.host = clientID;
+            session.host = newHostID;
             io.to(newHostSocket).emit("become-host");
             socket.emit("unbecome-host");
-        }
+        };
     });
 
     //--
@@ -529,6 +529,68 @@ io.on("connection", (socket) => {
 
         // handles an edge case, where a new arriver can't make play-emits, but the server needs to track the fact that the video was played anyway.
         // because what timestamp new arrivals should seek to is determined by math including timeUpdatedAt
+    });
+
+    //--
+    socket.on("change-nickname", (nickname: string, token: string) => {
+        const session = getSession(socket.id);
+        if (!session) return;
+        
+        const clientID = verifyIdentity(token);
+        if (!clientID) return;
+
+        const client = session.clients.get(clientID);
+        if (!client) return;
+
+        if (session.nicknames.has(nickname)) return;
+
+        const oldNickname = client.nickname;
+        session.nicknames.delete(oldNickname);
+
+        for (const message of session.chat) {
+            if (message.clientID === clientID) message.nickname = nickname;
+        };
+
+        client.nickname = nickname;
+        session.nicknames.set(nickname, clientID);
+        
+        const nicknames = getNicknames(session.id);
+        io.to(session.id).emit("send-members", nicknames);
+        socket.emit("send-nickname", nickname);
+        io.to(session.id).emit("send-chat-history", session.chat);
+    });
+
+    //--
+    socket.on("send-chat-message", (chatMessage: string, token: string) => {
+        const session = getSession(socket.id);
+        if (!session) return;
+
+        const clientID = verifyIdentity(token);
+        if (!clientID) return;
+
+        const client = session.clients.get(clientID);
+        if (!client) return;
+
+        const chatRecord: ChatMessage = {
+            id: session.chatMessageID,
+            createdAt: Date.now(),
+            clientID: clientID,
+            nickname: client.nickname,
+            message: chatMessage,
+        };
+        
+        session.chat.push(chatRecord);
+        session.chatMessageID++;
+        
+        io.to(session.id).emit("chat-message", chatRecord);
+    });
+
+    //--
+    socket.on("fetch-chat-history", () => {
+        const session = getSession(socket.id);
+        if (!session) return;
+
+        socket.emit("send-chat-history", session.chat);
     });
 
     //--
