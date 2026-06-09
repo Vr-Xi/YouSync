@@ -10,10 +10,18 @@ type ChatMessage = {
     nickname: string,
     message: string,
 };
+type QueueItem = {
+    id: string,
+    queueItemNumber: number,
+    videoID: string,
+    title: string,
+    position: number,
+};
+
 
 function WatchRoom() {
     const { sessionID } = useParams<string>();
-    const [ videoUrl, setVideoUrl ] = useState<string>("");
+    const [ videoInput, setVideoInput ] = useState<string>("");
     const videoID = useRef<string>(""); // different from videoID in VideoPlayer.tsx! This one holds the ID extracted from the form, to be used only for changing
     const navigate = useNavigate();
     const [ memberList, setMembers ] = useState<[string, string][]>([]);
@@ -22,11 +30,14 @@ function WatchRoom() {
     const [ pendingNickname, changePendingNickname ] = useState<string>("");
     const [ chatMessage, changeChatMessage ] = useState<string>("");
     const [ chat, updateChat ] = useState<ChatMessage[]>([]);
+    const [ videoQueue, updateVideoQueue ] = useState<QueueItem[]>([]);
 
     const handleVideoSubmit = (e: any) => {
         e.preventDefault();
-        videoID.current = extractVideoId(videoUrl);
+        videoID.current = extractVideoId(videoInput);
         socket.emit("load-request", videoID.current, sessionStorage.getItem("token"));
+    
+        setVideoInput("");
     }
 
     const extractVideoId = (url: string) => {
@@ -61,8 +72,36 @@ function WatchRoom() {
         socket.emit("send-chat-message", chatMessage, sessionStorage.getItem("token"));
         changeChatMessage("");
     };
-    const readDB = () => {
-        socket.emit("read-db");
+
+    // const readDB = () => {
+    //     socket.emit("read-db");
+    // };
+
+    const handleAddToQueue = async () => {
+        videoID.current = extractVideoId(videoInput);
+
+        if (!videoID) return;
+
+        const result = await fetch(
+            `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoID.current}&format=json`
+        );
+
+        if (!result.ok) return;
+        const data = await result.json();
+
+        socket.emit("add-video-to-queue", videoID.current, data.title, sessionStorage.getItem("token"));
+
+        setVideoInput("");
+    };
+
+    const getThumbnail = (queuedVideoID: string) => {
+        return `https://img.youtube.com//vi/${queuedVideoID}/mqdefault.jpg`;
+    };
+
+    const queueClick = (id: string, position: number) => {
+        if (!isHost) return;
+
+        socket.emit("load-from-queue", id, position, sessionStorage.getItem("token"));
     };
 
     useEffect(() => {
@@ -83,6 +122,7 @@ function WatchRoom() {
             socket.emit("fetch-members");
             socket.emit("fetch-video");
             socket.emit("fetch-chat-history");
+            socket.emit("fetch-video-queue");
         });
         socket.on("session-invalid", () => {
             navigate("/", { state: { error: "You tried to access a session that does not exist.", show: 1} });
@@ -110,6 +150,10 @@ function WatchRoom() {
         socket.on("chat-message", (message: ChatMessage) => {
             updateChat((prev) => [...prev, message]);
         });
+        socket.on("send-video-queue", (queue) => {
+            updateVideoQueue(queue);
+            console.log(queue);
+        });
 
 
         return () => {
@@ -127,6 +171,7 @@ function WatchRoom() {
             socket.off("unbecome-host");
             socket.off("send-chat-history");
             socket.off("chat-message");
+            socket.off("send-video-queue");
         };
     }, []);
 
@@ -136,13 +181,73 @@ function WatchRoom() {
             {isHost && <form onSubmit={handleVideoSubmit}>
                 <input 
                     type="text" 
-                    value={videoUrl}
-                    onChange={(e) => setVideoUrl(e.target.value)}
+                    value={videoInput}
+                    onChange={(e) => setVideoInput(e.target.value)}
                     placeholder="Paste YouTube link"
                 />
-                <button type="submit">Load Video</button>
+
+
+                <button type="submit">Load Now</button>
+
+                <button type="button" onClick={handleAddToQueue}>Play Next</button>
             </form>}
-            <VideoPlayer />
+
+
+            <div style={{
+                display: "flex",
+                flexDirection: "row",
+                // width: "640px",
+                height: "390px",
+                // border: "5px dashed white",
+            }}>
+
+                <div style={{
+                }}>
+                    <VideoPlayer />
+                </div>
+                
+                <ul style={{
+                    display: "flex",
+                    flex: 1,
+                    flexDirection: "column",
+                    maxHeight: "none",
+                    backgroundColor: "red",
+                    overflowY: "auto",
+                    listStyleType: "none",
+                    paddingTop: "20px",
+                }}>
+                {videoQueue.map((queuedVideo: QueueItem) => {
+                    return (
+                        <li key={queuedVideo.videoID} 
+                        style={{
+                            display: "flex",
+                            flexDirection: "row",
+                            color: "white",
+                            cursor: "pointer",
+                            marginBottom: "10px",
+                            backgroundColor: "rgba(50,50,100,1)",
+                            padding: "20px",
+                            border: "2px solid white",
+                            borderRadius: "5px",
+                        }}
+                        onClick={() => queueClick(queuedVideo.id, queuedVideo.position)}>
+                            <img src={getThumbnail(queuedVideo.videoID)} 
+                                alt="Video Thumbnail"
+                                style={{
+                                    width: "128px",
+                                    height: "78px",
+                                    border: "2px solid gray",
+                                    borderRadius: "5px",
+                                }}
+                            />
+                            <div>{queuedVideo.title}</div>
+                        </li>
+                    );
+                })}
+                </ul>
+            </div>
+
+
             <ul>
                 {memberList.map((entry: [string, string]) => {
                     return (
@@ -203,7 +308,7 @@ function WatchRoom() {
                     <button type="submit">Chat</button>
                 </form>
             </div>
-            <button onClick={readDB}>Secret button to fix the DB</button>
+            {/* <button onClick={readDB}>Secret button to fix the DB</button> */}
         </div>
     );
 }

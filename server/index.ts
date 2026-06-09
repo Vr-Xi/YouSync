@@ -5,6 +5,7 @@ import cors from "cors";
 import jwt from "jsonwebtoken";
 import "dotenv/config";
 import { db } from "./db/db.js";
+import { verify } from "crypto";
 
 const app = express();
 app.use(cors());
@@ -112,7 +113,7 @@ async function dbFetchChat(roomID: string) {
         `
         SELECT * FROM chat_messages
         WHERE room_id = $1
-        ORDER BY message_number
+        ORDER BY message_number ASC
         `,
         [roomID]
     );
@@ -186,6 +187,8 @@ type Session = {
     status: string,
     videoTime: number,
     timeUpdatedAt: number | null,
+    videoQueue: Array<QueueItem>;
+    queueItemNumber: number,
     actionID: number,
 };
 
@@ -203,6 +206,14 @@ type ChatMessage = {
     clientID: string,
     nickname: string,
     message: string,
+};
+
+type QueueItem = {
+    id: string,
+    queueItemNumber: number,
+    videoID: string,
+    title: string,
+    position: number,
 };
 
 const sessions: Map<string, Session> = new Map();
@@ -246,6 +257,8 @@ async function createSession(sessionID: string) {
             status: "unstarted",
             videoTime: 0,
             timeUpdatedAt: null,
+            videoQueue: [],
+            queueItemNumber: 1,
             actionID: 1,
         };
 
@@ -268,7 +281,7 @@ async function createSession(sessionID: string) {
         const dbChatMessageNumber = (await dbFetchMessageNumber(session.id)).rows[0]?.next_message_number;
         if (dbChatMessageNumber) session.chatMessageNumber = dbChatMessageNumber;
 
-        console.log(session.id, session.chatMessageNumber);
+        // console.log(session.id, session.chatMessageNumber);
 
         return session;
 };
@@ -382,7 +395,7 @@ function disconnectHelper(socketID: string): void {
         session.deletionTimer = setTimeout(() => {
             if (session.activeClients.size === 0) {
                 sessions.delete(session.id);
-                console.log("Session emptied -- deleting.")
+                // console.log("Session emptied -- deleting.")
             };
         }, 10_000);
     } else {
@@ -437,10 +450,12 @@ io.on("connection", (socket) => {
 
         if (!data || data.sessionID != session.id || data.lifeID != session.lifeID) {
             // people who reload will have a token. new arrivals will be given one here
+            // people who have a stale token will also land here, getting a new one
+            // tokens can be stale if the tab is coming from another watchroom, or if the current watchroom was revived by activity
             const newClientID = crypto.randomUUID();
             token = issueToken(newClientID, session.id, session.lifeID);
             data = verifyIdentity(token);
-            socket.emit("unbecome-host");
+            socket.emit("unbecome-host"); // sometimes necessary because browser navigation buttons do weird things
         } else {
             token = inputToken;
         }
@@ -466,7 +481,6 @@ io.on("connection", (socket) => {
             session.socketToClientID.set(socket.id, clientID);
             session.clientIDToSocket.set(clientID, socket.id);
             socket.emit("send-nickname", client.nickname);
-            console.log("Recognized as " + client.nickname);
         } else {
             const nickname = chooseNewNickname(sessionID);
             if (typeof(nickname) != "string") {
@@ -545,7 +559,7 @@ io.on("connection", (socket) => {
         
         session.videoID = video;
         session.videoTime = 0;
-        session.status = "paused";
+        session.status = "unstarted";
         io.to(session.id).emit("load-order", session.videoID, session.status, session.videoTime);
     });    
     
@@ -749,6 +763,75 @@ io.on("connection", (socket) => {
     });
 
     //--
+    // socket.on("read-db", async () => {
+    //     await readDBMessages();
+    // });
+
+    //--
+    socket.on("add-video-to-queue", (videoID: string, title: string, token: string) => {
+        const session = getSession(socket.id);
+        if (!session) return;
+
+        const data = verifyIdentity(token);
+        if (!data) return;
+
+        if (data.clientID != session.host) return;
+
+
+        for (const item of session.videoQueue) {
+            if (item.videoID === videoID) return;
+        };
+
+        const item: QueueItem = {
+            id: `${session.id}-video-${session.queueItemNumber}`,
+            queueItemNumber: session.queueItemNumber,
+            videoID,
+            title,
+            position: session.videoQueue.length + 1,
+        };
+
+        session.videoQueue.push(item);
+        session.queueItemNumber++;
+        io.to(session.id).emit("send-video-queue", session.videoQueue);
+    });
+
+    //--
+    socket.on("fetch-video-queue", () => {
+        const session = getSession(socket.id);
+        if (!session) return;
+
+        socket.emit("send-video-queue", session.videoQueue);
+    });
+
+    //--
+    socket.on("load-from-queue", (id: string, position: number, token: string) => {
+        const session = getSession(socket.id);
+        if (!session) return;
+
+        const data = verifyIdentity(token);
+        if (!data) return;
+
+        if (data.clientID != session.host) return;
+
+        const newVideoQueue: Array<QueueItem> = [];
+
+        for (const item of session.videoQueue) {
+            if (item.id !== id) {
+                if (item.position > position) item.position--;
+                newVideoQueue.push(item);
+            } else {
+                session.videoID = item.videoID;
+                session.status = "unstarted";
+                io.to(session.id).emit("load-order", item.videoID);
+            }
+        };
+
+        session.videoQueue = newVideoQueue;
+        
+        io.to(session.id).emit("send-video-queue", session.videoQueue);
+    });
+
+    //--
     socket.on("leave-session", () => {
         // this exists because not all ways of leaving a session actually cause a disconnect event
         // for example, navigating to the previous page via the browser button will not fire a socket disconnect
@@ -763,12 +846,6 @@ io.on("connection", (socket) => {
         if (!session) return;
         // console.log("User disconnected:", socket.id);
         disconnectHelper(socket.id);
-    });
-
-
-    //--
-    socket.on("read-db", async () => {
-        await readDBMessages();
     });
 });
 
