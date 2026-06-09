@@ -61,6 +61,9 @@ function WatchRoom() {
         socket.emit("send-chat-message", chatMessage, sessionStorage.getItem("token"));
         changeChatMessage("");
     };
+    const readDB = () => {
+        socket.emit("read-db");
+    };
 
     useEffect(() => {
 
@@ -75,11 +78,12 @@ function WatchRoom() {
         // const clientID = sessionStorage.getItem("clientID");
 
         socket.emit("join-session", sessionID, sessionStorage.getItem("token"));
-        socket.emit("fetch-members");
-        socket.emit("fetch-video");
-        socket.emit("fetch-chat-history");
 
-
+        socket.on("joined-session", () => {
+            socket.emit("fetch-members");
+            socket.emit("fetch-video");
+            socket.emit("fetch-chat-history");
+        });
         socket.on("session-invalid", () => {
             navigate("/", { state: { error: "You tried to access a session that does not exist.", show: 1} });
         })
@@ -114,6 +118,7 @@ function WatchRoom() {
             // but that would mess up my internal cleanup. so we do it manually here
             socket.emit("leave-session");
 
+            socket.off("joined-session");
             socket.off("session-invalid");
             socket.off("send-members");
             socket.off("send-nickname");
@@ -175,12 +180,16 @@ function WatchRoom() {
                     backgroundColor: "white",
                     width: "200px",
                     height: "450px",
-                    overflow: "auto",
+                    overflowY: "auto",
+                    overflowX: "hidden",
                 }}>
                     {chat.map( (entry) => {
-                        // entry[1] = Math.round(entry[0] * 100) / 100;
+                        const entry_time = new Date(entry.createdAt).toLocaleTimeString("en-GB", {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                        });
                         return (
-                            <li key={entry.id}>{entry.createdAt} {entry.nickname}: {entry.message}</li>
+                            <li key={entry.id}>{entry_time} {entry.nickname}: {entry.message}</li>
                         )
                     })}
                 </ul>
@@ -194,6 +203,7 @@ function WatchRoom() {
                     <button type="submit">Chat</button>
                 </form>
             </div>
+            <button onClick={readDB}>Secret button to fix the DB</button>
         </div>
     );
 }

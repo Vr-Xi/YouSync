@@ -45,7 +45,7 @@ async function roomUpdate(roomID: string) {
 
 async function roomExists(roomID: string) {
 
-    const result = await db.query(
+    const data = await db.query(
         `
         SELECT 1
         FROM rooms
@@ -54,12 +54,114 @@ async function roomExists(roomID: string) {
         [roomID]
     );
 
-    return result.rows.length > 0;
+    return data.rows.length > 0;
 };
 
-// ensureRoom("abcdefg")
-//     .then(() => db.query("SELECT * FROM rooms"))
-//     .then(result => console.log(result.rows));
+async function updateMessageNumber(roomID: string, newNumber: number) {
+
+    await db.query(
+        `
+        UPDATE rooms
+        SET next_message_number = $2
+        WHERE id = $1
+        `,
+        [roomID, newNumber]
+    );
+};
+
+async function addMessageLog(roomID: string, chatRecord: ChatMessage) {
+
+    await db.query(
+        `
+        INSERT INTO chat_messages (
+            id,
+            room_id,
+            message_number,
+            client_id,
+            nickname,
+            message
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+        [
+            chatRecord.id,
+            roomID,
+            chatRecord.messageNumber,
+            chatRecord.clientID,
+            chatRecord.nickname,
+            chatRecord.message
+        ]
+    );
+};
+
+async function dbNicknameChange(roomID: string, clientID: string, nickname: string) {
+
+    await db.query(
+        `
+        UPDATE chat_messages
+        SET nickname = $3
+        WHERE client_id = $2
+        AND room_id = $1
+        `,
+        [roomID, clientID, nickname]
+    );
+};
+
+async function dbFetchChat(roomID: string) {
+    const data = await db.query(
+        `
+        SELECT * FROM chat_messages
+        WHERE room_id = $1
+        ORDER BY message_number
+        `,
+        [roomID]
+    );
+
+    return data;
+};
+
+async function dbFetchMessageNumber(roomID: string) {
+    const data = await db.query(
+        `
+        SELECT * FROM rooms
+        WHERE id = $1
+        `,
+        [roomID]
+    );
+
+    return data;
+};
+
+async function readDBMessages() {
+    const data1 = await db.query(
+        `
+        SELECT * FROM chat_messages
+        `
+    );
+
+    const data2 = new Map();
+
+    for (const message of data1.rows) {
+        if (data2.has(message.room_id)) {
+            data2.set(message.room_id, data2.get(message.room_id) + 1);
+        } else {
+            data2.set(message.room_id, 1);
+        }
+    };
+
+    console.log(data2);
+
+    // for ( const [key, value] of data2 ) {
+    //     await db.query(
+    //         `
+    //         UPDATE rooms
+    //         SET next_message_number = $2
+    //         WHERE id = $1
+    //         `,
+    //         [key, value + 1]
+    //     );
+    // };
+}
 
 
 // db end ---------------------
@@ -67,6 +169,7 @@ async function roomExists(roomID: string) {
 
 type Session = {
     id: string,
+    lifeID: string,
     host: string | null,
     clients: Map<string, Client>,
     activeClients: Map<string, Client>, // almost the same as clients, but excluding people who left
@@ -74,7 +177,7 @@ type Session = {
     clientIDToSocket: Map<string, string>,
     nicknames: Map<string, string>,
     chat: Array<ChatMessage>,
-    chatMessageID: number,
+    chatMessageNumber: number,
     createdAt: number,
     lastActivity: number,
     nextUserNumber: number,
@@ -94,7 +197,8 @@ type Client = {
 };
 
 type ChatMessage = {
-    id: number,
+    id: string,
+    messageNumber: number,
     createdAt: number,
     clientID: string,
     nickname: string,
@@ -114,15 +218,63 @@ async function generateSessionId(): Promise<string> {
 
     let id = generateID();
 
-    while ( sessions.has(id) || await roomExists(id)) {
+    while ( sessions.has(id) || await roomExists(id) ) {
         id = generateID();
     };
     
     return id; 
 };
 
-function issueToken(clientID: string ) {
-    return jwt.sign({ clientID }, SECRET, { expiresIn: "24h" });
+async function createSession(sessionID: string) {
+        const session: Session = {
+            id: sessionID,
+            lifeID: crypto.randomUUID(),
+            host: null,
+            clients: new Map(),
+            activeClients: new Map(),
+            socketToClientID: new Map(),
+            clientIDToSocket: new Map(),
+            nicknames: new Map(),
+            chat: [],
+            chatMessageNumber: 1,
+            createdAt: Date.now(),
+            lastActivity: Date.now(),
+            nextUserNumber: 1,
+            // videoID: "2H0r81kv5GA"
+            // videoID: "zt3F7kRB5ik",
+            videoID: "8gKJ9mMPuIQ",
+            status: "unstarted",
+            videoTime: 0,
+            timeUpdatedAt: null,
+            actionID: 1,
+        };
+
+        sessions.set(session.id, session);
+        const chat = await dbFetchChat(session.id);
+
+        session.chat = chat.rows.map((message) => {
+            const formattedMessage: ChatMessage = {
+                id: message.id,
+                messageNumber: message.message_number,
+                createdAt: new Date(message.created_at).getTime(),
+                clientID: message.client_id,
+                nickname: message.nickname,
+                message: message.message // lmao
+            };
+
+            return formattedMessage;
+        });
+
+        const dbChatMessageNumber = (await dbFetchMessageNumber(session.id)).rows[0]?.next_message_number;
+        if (dbChatMessageNumber) session.chatMessageNumber = dbChatMessageNumber;
+
+        console.log(session.id, session.chatMessageNumber);
+
+        return session;
+};
+
+function issueToken(clientID: string, sessionID: string, lifeID: string) {
+    return jwt.sign({ clientID, sessionID, lifeID }, SECRET, { expiresIn: "24h" });
 };
 
 function getNicknames(sessionID: string) {
@@ -189,8 +341,8 @@ function chooseNewNickname(sessionID: string) {
 
 function verifyIdentity(token: string) {
     try {
-        const data = jwt.verify(token, SECRET) as { clientID: string };
-        return data.clientID;
+        const data = jwt.verify(token, SECRET) as { clientID: string, sessionID: string, lifeID: string };
+        return data;
     } catch {
         return; // reject invalid tokens
     }
@@ -228,7 +380,7 @@ function disconnectHelper(socketID: string): void {
         };
 
         session.deletionTimer = setTimeout(() => {
-            if (session.clients.size === 0) {
+            if (session.activeClients.size === 0) {
                 sessions.delete(session.id);
                 console.log("Session emptied -- deleting.")
             };
@@ -258,56 +410,43 @@ io.on("connection", (socket) => {
     socket.on("create-session", async () => {
         let id = await generateSessionId();
 
-        const session: Session = {
-            id,
-            host: null,
-            clients: new Map(),
-            activeClients: new Map(),
-            socketToClientID: new Map(),
-            clientIDToSocket: new Map(),
-            nicknames: new Map(),
-            chat: [],
-            chatMessageID: 0,
-            createdAt: Date.now(),
-            lastActivity: Date.now(),
-            nextUserNumber: 1,
-            // videoID: "2H0r81kv5GA"
-            // videoID: "zt3F7kRB5ik",
-            videoID: "8gKJ9mMPuIQ",
-            status: "unstarted",
-            videoTime: 0,
-            timeUpdatedAt: null,
-            actionID: 1,
-        };
-
-        sessions.set(id, session);
+        const session = await createSession(id);
         socket.emit("session-created", id);
         // console.log(`Created session ${id}`);
 
         roomEntry(session.id);
+        //
     });
 
     //--
-    socket.on("join-session", (sessionID: string, inputToken: string) => {
-        const session = sessions.get(sessionID);
+    socket.on("join-session", async (sessionID: string, inputToken: string) => {
+        let session = sessions.get(sessionID);
         if (!session) {
-            socket.emit("session-invalid");
-            return;
+            if (await roomExists(sessionID)) {
+                session = await createSession(sessionID);
+                await roomEntry(session.id);
+            } else {
+                socket.emit("session-invalid");
+                return;
+            }
         };
 
-        let token = inputToken;
+        let data = verifyIdentity(inputToken);
         let client: Client;
+        let token;
 
-        if (!token) {
+        if (!data || data.sessionID != session.id || data.lifeID != session.lifeID) {
             // people who reload will have a token. new arrivals will be given one here
             const newClientID = crypto.randomUUID();
-            token = issueToken(newClientID);
+            token = issueToken(newClientID, session.id, session.lifeID);
+            data = verifyIdentity(token);
             socket.emit("unbecome-host");
-        };
+        } else {
+            token = inputToken;
+        }
 
-        const clientID = verifyIdentity(token);
+        const clientID = data?.clientID;
         if (!clientID) return;
-
 
         // if the session was about to close down, stop that
         if (session.deletionTimer) {
@@ -326,6 +465,8 @@ io.on("connection", (socket) => {
             session.activeClients.set(clientID, client);
             session.socketToClientID.set(socket.id, clientID);
             session.clientIDToSocket.set(clientID, socket.id);
+            socket.emit("send-nickname", client.nickname);
+            console.log("Recognized as " + client.nickname);
         } else {
             const nickname = chooseNewNickname(sessionID);
             if (typeof(nickname) != "string") {
@@ -364,9 +505,12 @@ io.on("connection", (socket) => {
         socket.join(sessionID);
         socketToSession.set(socket.id, sessionID);
         session.lastActivity = Date.now();
-
+        
+        socket.emit("joined-session");
         socket.emit("auth-token", token);
-        roomUpdate(session.id);
+        // socket.emit("load-order", session.videoID);
+
+        await roomUpdate(session.id);
     });
 
     //--
@@ -379,6 +523,7 @@ io.on("connection", (socket) => {
 
         const clientID = session.socketToClientID.get(socket.id);
         if (!clientID) return;
+
         const client = session.clients.get(clientID);
         if (!client) return;
 
@@ -390,7 +535,7 @@ io.on("connection", (socket) => {
     socket.on("load-request", (video: string, token: string) => {
         if (!token) return;
 
-        const clientID = verifyIdentity(token);
+        const clientID = verifyIdentity(token)?.clientID;
         if (!clientID) return;
         
         const session = getSession(socket.id);
@@ -409,7 +554,6 @@ io.on("connection", (socket) => {
         // console.log("video fetch arrived");
         const session = getSession(socket.id);
         if (!session) return;
-        
 
         socket.emit("load-order", session.videoID);
         // console.log("video fetch succeeded");
@@ -419,7 +563,7 @@ io.on("connection", (socket) => {
     socket.on("check-hostship", (token: string) => {
         if (!token) return;
 
-        const clientID = verifyIdentity(token);
+        const clientID = verifyIdentity(token)?.clientID;
         if (!clientID) return;
 
         const session = getSession(socket.id);
@@ -432,7 +576,7 @@ io.on("connection", (socket) => {
     socket.on("change-host", (token: string, newHostID) => {
         if (!token) return;
 
-        const clientID = verifyIdentity(token);
+        const clientID = verifyIdentity(token)?.clientID;
         if (!clientID) return;
 
         const session = getSession(socket.id);
@@ -502,6 +646,7 @@ io.on("connection", (socket) => {
     socket.on("fetch-time", () => {
         const session = getSession(socket.id);
         if (!session) return;
+        
 
         // if (!session.timeUpdatedAt) time = session.videoTime;
         // else time = session.videoTime + (Date.now() - session.timeUpdatedAt) / 1000; // cool trick, but should be handled client-side, to cancel out communication delay
@@ -536,7 +681,7 @@ io.on("connection", (socket) => {
         const session = getSession(socket.id);
         if (!session) return;
         
-        const clientID = verifyIdentity(token);
+        const clientID = verifyIdentity(token)?.clientID;
         if (!clientID) return;
 
         const client = session.clients.get(clientID);
@@ -558,6 +703,8 @@ io.on("connection", (socket) => {
         io.to(session.id).emit("send-members", nicknames);
         socket.emit("send-nickname", nickname);
         io.to(session.id).emit("send-chat-history", session.chat);
+    
+        dbNicknameChange(session.id, clientID, nickname);
     });
 
     //--
@@ -565,14 +712,17 @@ io.on("connection", (socket) => {
         const session = getSession(socket.id);
         if (!session) return;
 
-        const clientID = verifyIdentity(token);
+        const clientID = verifyIdentity(token)?.clientID;
         if (!clientID) return;
 
         const client = session.clients.get(clientID);
         if (!client) return;
 
+        const messageID = session.id + "-" + session.chatMessageNumber
+
         const chatRecord: ChatMessage = {
-            id: session.chatMessageID,
+            id: messageID,
+            messageNumber: session.chatMessageNumber,
             createdAt: Date.now(),
             clientID: clientID,
             nickname: client.nickname,
@@ -580,9 +730,14 @@ io.on("connection", (socket) => {
         };
         
         session.chat.push(chatRecord);
-        session.chatMessageID++;
+        session.chatMessageNumber++;
+
+        // console.log("logging message #" + messageID);
         
         io.to(session.id).emit("chat-message", chatRecord);
+        
+        updateMessageNumber(session.id, session.chatMessageNumber);
+        addMessageLog(session.id, chatRecord);
     });
 
     //--
@@ -610,6 +765,11 @@ io.on("connection", (socket) => {
         disconnectHelper(socket.id);
     });
 
+
+    //--
+    socket.on("read-db", async () => {
+        await readDBMessages();
+    });
 });
 
 
