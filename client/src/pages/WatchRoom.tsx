@@ -104,6 +104,11 @@ function WatchRoom() {
         socket.emit("load-from-queue", id, position, sessionStorage.getItem("token"));
     };
 
+    const sendHome = () => {
+        navigate("/");
+        socket.emit("leave-session");
+    };
+
     useEffect(() => {
 
         // managing nickname persistence across page reload
@@ -123,6 +128,7 @@ function WatchRoom() {
             socket.emit("fetch-video");
             socket.emit("fetch-chat-history");
             socket.emit("fetch-video-queue");
+            socket.emit("fetch-initial-time");
         });
         socket.on("session-invalid", () => {
             navigate("/", { state: { error: "You tried to access a session that does not exist.", show: 1} });
@@ -152,7 +158,7 @@ function WatchRoom() {
         });
         socket.on("send-video-queue", (queue) => {
             updateVideoQueue(queue);
-            console.log(queue);
+            console.log("Video Queue is: " + queue);
         });
 
 
@@ -308,6 +314,7 @@ function WatchRoom() {
                     <button type="submit">Chat</button>
                 </form>
             </div>
+            <button onClick={sendHome}>Home</button>
             {/* <button onClick={readDB}>Secret button to fix the DB</button> */}
         </div>
     );

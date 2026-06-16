@@ -5,7 +5,6 @@ import cors from "cors";
 import jwt from "jsonwebtoken";
 import "dotenv/config";
 import { db } from "./db/db.js";
-import { verify } from "crypto";
 
 const app = express();
 app.use(cors());
@@ -15,6 +14,10 @@ const io = new Server(server, {
 });
 const SECRET = process.env.JWT_SECRET as string;
 
+
+function l(log: string) {
+    console.log(log);
+};
 
 // db -------------------------
 
@@ -254,6 +257,7 @@ async function createSession(sessionID: string) {
             // videoID: "2H0r81kv5GA"
             // videoID: "zt3F7kRB5ik",
             videoID: "8gKJ9mMPuIQ",
+            // videoID: "YWeSTFCr94g",
             status: "unstarted",
             videoTime: 0,
             timeUpdatedAt: null,
@@ -385,12 +389,17 @@ function disconnectHelper(socketID: string): void {
     session.clientIDToSocket.delete(clientID);
     socketToSession.delete(socketID);
 
-
     // delete when empty
     if (session.activeClients.size === 0) {
         if (session.deletionTimer) {
             clearTimeout(session.deletionTimer);
         };
+        // session.status = "paused";
+        if (session.timeUpdatedAt) {
+            session.videoTime += (Date.now() - session.timeUpdatedAt) / 1000;
+            session.timeUpdatedAt = null;
+        };
+
 
         session.deletionTimer = setTimeout(() => {
             if (session.activeClients.size === 0) {
@@ -560,7 +569,8 @@ io.on("connection", (socket) => {
         session.videoID = video;
         session.videoTime = 0;
         session.status = "unstarted";
-        io.to(session.id).emit("load-order", session.videoID, session.status, session.videoTime);
+        l("Trying to emit a load order with the following parameters: " + session.videoID + " " + session.status + " " + session.videoTime + " " + session.timeUpdatedAt);
+        io.to(session.id).emit("load-order", session.videoID, session.status, session.videoTime, session.timeUpdatedAt);
     });    
     
     //--
@@ -606,7 +616,7 @@ io.on("connection", (socket) => {
     });
 
     //--
-    socket.on("play-video", (time: any) => {
+    socket.on("play-video", (time: number, date: number) => {
         // console.log("___________ video data ___________");
         const sessionID = socketToSession.get(socket.id);
         if (!sessionID) return;
@@ -625,15 +635,15 @@ io.on("connection", (socket) => {
 
         session.status = "playing";
         session.videoTime = time;
-        session.timeUpdatedAt = Date.now();
+        session.timeUpdatedAt = date;
         // console.log("time updated at: " + session.timeUpdatedAt);
-        socket.to(sessionID).emit("video-play-order", time);
+        socket.to(sessionID).emit("video-play-order", time, session.timeUpdatedAt);
 
         roomUpdate(sessionID);
     });
 
     //--
-    socket.on("pause-video", (time: any) => {
+    socket.on("pause-video", (time: number) => {
         const sessionID = socketToSession.get(socket.id);
         if (!sessionID) return;
         const session = sessions.get(sessionID);
@@ -661,10 +671,21 @@ io.on("connection", (socket) => {
         const session = getSession(socket.id);
         if (!session) return;
         
+        // let time = session.videoTime;
 
-        // if (!session.timeUpdatedAt) time = session.videoTime;
-        // else time = session.videoTime + (Date.now() - session.timeUpdatedAt) / 1000; // cool trick, but should be handled client-side, to cancel out communication delay
+        // if (session.timeUpdatedAt) time += (Date.now() - session.timeUpdatedAt) / 1000; // cool trick, but should be handled client-side, to cancel out communication delay
+        // changed my mind on client-side handling, because it invariably causes skips.
+        // so my options are, do you want delays, or do you want skips? damn it. I guess delays it is.
         socket.emit("send-time", session.status, session.videoTime, session.timeUpdatedAt);
+    });
+
+        //--
+    socket.on("fetch-initial-time", () => {
+        const session = getSession(socket.id);
+        if (!session) return;
+
+        // literally the same as fetch-time, but distinguished to trigger a different response
+        socket.emit("send-initial-time", session.status, session.videoTime, session.timeUpdatedAt);
     });
     
     //--
@@ -672,6 +693,10 @@ io.on("connection", (socket) => {
         // same as fetch-time, but targeting a different client-side function
         const session = getSession(socket.id);
         if (!session) return;
+
+        // let time = session.videoTime;
+        
+        // if (session.timeUpdatedAt) time = session.videoTime + (Date.now() - session.timeUpdatedAt) / 1000;
 
         socket.emit("sync-check", session.status, session.videoTime, session.timeUpdatedAt);
     });
@@ -684,10 +709,16 @@ io.on("connection", (socket) => {
         if (session.timeUpdatedAt) return;
 
         // console.log("update-time fired");
+
+        session.status = "playing";
         session.timeUpdatedAt = Date.now();
 
         // handles an edge case, where a new arriver can't make play-emits, but the server needs to track the fact that the video was played anyway.
         // because what timestamp new arrivals should seek to is determined by math including timeUpdatedAt
+    
+        // after coming back to this later, I have no idea what the idea behind this was lmao
+        // alright I removed it to see what happens and have concluded that it is ABSOLUTELY necessary yea
+        // it was implemented badly though.
     });
 
     //--
