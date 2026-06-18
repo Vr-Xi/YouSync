@@ -136,6 +136,18 @@ async function dbFetchMessageNumber(roomID: string) {
     return data;
 };
 
+async function dbFetchNextQueueItemNumber(roomID: string) {
+    const data = await db.query(
+        `
+        SELECT * FROM rooms
+        WHERE id = $1
+        `,
+        [roomID]
+    );
+
+    return data;
+};
+
 async function readDBMessages() {
     const data1 = await db.query(
         `
@@ -285,6 +297,8 @@ async function createSession(sessionID: string) {
         const dbChatMessageNumber = (await dbFetchMessageNumber(session.id)).rows[0]?.next_message_number;
         if (dbChatMessageNumber) session.chatMessageNumber = dbChatMessageNumber;
 
+        const dbNextQueueItemNumber = (await dbFetchNextQueueItemNumber(session.id)).rows[0]?.next_queue_item_number;
+        if (dbNextQueueItemNumber) session.chatMessageNumber = dbNextQueueItemNumber;
         // console.log(session.id, session.chatMessageNumber);
 
         return session;
@@ -394,7 +408,6 @@ function disconnectHelper(socketID: string): void {
         if (session.deletionTimer) {
             clearTimeout(session.deletionTimer);
         };
-        // session.status = "paused";
         if (session.timeUpdatedAt) {
             session.videoTime += (Date.now() - session.timeUpdatedAt) / 1000;
             session.timeUpdatedAt = null;
@@ -684,8 +697,9 @@ io.on("connection", (socket) => {
         const session = getSession(socket.id);
         if (!session) return;
 
+        const time = (session.timeUpdatedAt) ? session.videoTime + (Date.now() - session.timeUpdatedAt) / 1000 : session.videoTime;
         // literally the same as fetch-time, but distinguished to trigger a different response
-        socket.emit("send-initial-time", session.status, session.videoTime, session.timeUpdatedAt);
+        socket.emit("send-initial-time", session.status, time);
     });
     
     //--

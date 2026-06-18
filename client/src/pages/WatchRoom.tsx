@@ -31,6 +31,7 @@ function WatchRoom() {
     const [ chatMessage, changeChatMessage ] = useState<string>("");
     const [ chat, updateChat ] = useState<ChatMessage[]>([]);
     const [ videoQueue, updateVideoQueue ] = useState<QueueItem[]>([]);
+    const watchroomShellRef = useRef<HTMLDivElement |null>(null);
 
     const handleVideoSubmit = (e: any) => {
         e.preventDefault();
@@ -107,6 +108,17 @@ function WatchRoom() {
     const sendHome = () => {
         navigate("/");
         socket.emit("leave-session");
+    };
+
+    const toggleFullscreen = () => {
+        const shell = watchroomShellRef.current;
+        if (!shell) return;
+
+        if (!document.fullscreenElement) {
+            shell.requestFullscreen();
+        } else {
+            document.exitFullscreen()
+        };
     };
 
     useEffect(() => {
@@ -199,19 +211,28 @@ function WatchRoom() {
             </form>}
 
 
-            <div style={{
-                display: "flex",
-                flexDirection: "row",
-                // width: "640px",
-                height: "390px",
-                // border: "5px dashed white",
-            }}>
+            <div
+                ref={watchroomShellRef}
+                style={{
+                    display: "flex",
+                    flexDirection: "row",
+                    // width: "640px",
+                    height: "700px",
+                    // border: "5px dashed white",
+                }}
+            >
 
-                <div style={{
-                }}>
-                    <VideoPlayer />
+                {/* VideoPlayer */}
+                <div 
+                    style={{
+                    }}
+                >
+                    <VideoPlayer onToggleFullscreen={toggleFullscreen}/>
                 </div>
+                {/* VideoPlayer end */}
                 
+
+                {/* VideoQueue */}
                 <ul style={{
                     display: "flex",
                     flex: 1,
@@ -251,6 +272,45 @@ function WatchRoom() {
                     );
                 })}
                 </ul>
+                {/* VideoQueue end */}
+
+
+                {/* Chat */}
+                <div style={{
+                    backgroundColor: "rgba(50,50,50,1)",
+                    width: "200px",
+                    height: "550px",
+                    justifySelf: "center",
+                }}>
+                    <ul style={{
+                        backgroundColor: "white",
+                        width: "200px",
+                        height: "450px",
+                        overflowY: "auto",
+                        overflowX: "hidden",
+                    }}>
+                        {chat.map( (entry) => {
+                            const entry_time = new Date(entry.createdAt).toLocaleTimeString("en-GB", {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                            });
+                            return (
+                                <li key={entry.id}>{entry_time} {entry.nickname}: {entry.message}</li>
+                            )
+                        })}
+                    </ul>
+                    <form onSubmit={handleChatMessage}>
+                        <input 
+                            type="text"
+                            value={chatMessage}
+                            onChange={(e) => changeChatMessage(e.target.value)}
+                            placeholder="Send a Chat message"
+                        />
+                        <button type="submit">Chat</button>
+                    </form>
+                </div>
+                {/* Chat end */}
+            
             </div>
 
 
@@ -281,39 +341,8 @@ function WatchRoom() {
                 />
                 <button type="submit">Change Nickname</button>
             </form>
-            <div style={{
-                backgroundColor: "rgba(50,50,50,1)",
-                width: "200px",
-                height: "550px",
-                justifySelf: "center",
-            }}>
-                <ul style={{
-                    backgroundColor: "white",
-                    width: "200px",
-                    height: "450px",
-                    overflowY: "auto",
-                    overflowX: "hidden",
-                }}>
-                    {chat.map( (entry) => {
-                        const entry_time = new Date(entry.createdAt).toLocaleTimeString("en-GB", {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                        });
-                        return (
-                            <li key={entry.id}>{entry_time} {entry.nickname}: {entry.message}</li>
-                        )
-                    })}
-                </ul>
-                <form onSubmit={handleChatMessage}>
-                    <input 
-                        type="text"
-                        value={chatMessage}
-                        onChange={(e) => changeChatMessage(e.target.value)}
-                        placeholder="Send a Chat message"
-                    />
-                    <button type="submit">Chat</button>
-                </form>
-            </div>
+
+            
             <button onClick={sendHome}>Home</button>
             {/* <button onClick={readDB}>Secret button to fix the DB</button> */}
         </div>
