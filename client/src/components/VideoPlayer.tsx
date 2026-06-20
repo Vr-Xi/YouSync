@@ -43,9 +43,10 @@ const VideoPlayer = ({ onToggleFullscreen }: VideoPlayerProps) => {
     function handleLoadOrder(video: string, status: string, time: number, timestamp: number | null) {
         setVideoID(video);
         serversideStatus.current = status;
+        newArrival.current = true;
         newArrivalTime.current = time;
         newArrivalTimestamp.current = timestamp;
-        l("LoadOrder says: " + status + " " + time + " " + timestamp);
+
     };
 
     function handlePlayerClick() {
@@ -56,19 +57,22 @@ const VideoPlayer = ({ onToggleFullscreen }: VideoPlayerProps) => {
 
         const state = player.getPlayerState();
 
-
         if (newArrival.current) {
             newArrival.current = false;
             
             if (serversideStatus.current === "paused") {
                 player.seekTo(newArrivalTime.current);
                 toggleIsPlaying(true);
-                l("as expected");
                 socket.emit("play-video", newArrivalTime.current, Date.now());
-            } else {
+            } else if (serversideStatus.current === "playing") {
                 player.seekTo(newArrivalTime.current + (Date.now() - newArrivalTimestamp.current) / 1000);
+                // player.seekTo(newArrivalTime.current);
                 toggleIsPlaying(true);
                 player.playVideo();
+            } else {
+                toggleIsPlaying(true);
+                player.playVideo();
+                socket.emit("play-video", 0, Date.now());
             }
             return;
         }
@@ -95,6 +99,8 @@ const VideoPlayer = ({ onToggleFullscreen }: VideoPlayerProps) => {
     };
 
     function onPlayOrder (time: number, timestamp: number) {
+        serversideStatus.current = "playing";
+
         const player = playerRef.current;
         if (!player) return;
 
@@ -112,6 +118,8 @@ const VideoPlayer = ({ onToggleFullscreen }: VideoPlayerProps) => {
     };
 
     function onPauseOrder(time: number) {
+        serversideStatus.current = "paused";
+
         const player = playerRef.current;
         if (!player) return;
 
@@ -148,7 +156,6 @@ const VideoPlayer = ({ onToggleFullscreen }: VideoPlayerProps) => {
             playerRef.current.seekTo(time, true);
         }
         
-        l("status is: " + serversideStatus.current);
 
         if (serversideStatus.current === "paused") {
             // suppressPause.current = true;
@@ -184,11 +191,11 @@ const VideoPlayer = ({ onToggleFullscreen }: VideoPlayerProps) => {
         // May need to make this.
     // };
 
-    function handleInitialTime(status: string, time: number) {
+    function handleInitialTime(status: string, time: number, timestamp: number) {
         serversideStatus.current = status;
         newArrivalTime.current = time;
-        // newArrivalTimestamp.current = timestamp;
-        newArrivalTimestamp.current = Date.now(); // actually, this is better, lmao
+        newArrivalTimestamp.current = timestamp;
+        // newArrivalTimestamp.current = Date.now(); // actually, this is better, lmao
     };
 
     function handleSlider() {

@@ -61,7 +61,7 @@ async function roomExists(roomID: string) {
     return data.rows.length > 0;
 };
 
-async function updateMessageNumber(roomID: string, newNumber: number) {
+async function dbUpdateMessageNumber(roomID: string, newNumber: number) {
 
     await db.query(
         `
@@ -73,7 +73,7 @@ async function updateMessageNumber(roomID: string, newNumber: number) {
     );
 };
 
-async function addMessageLog(roomID: string, chatRecord: ChatMessage) {
+async function dbAddMessageLog(roomID: string, chatRecord: ChatMessage) {
 
     await db.query(
         `
@@ -112,6 +112,7 @@ async function dbNicknameChange(roomID: string, clientID: string, nickname: stri
 };
 
 async function dbFetchChat(roomID: string) {
+    
     const data = await db.query(
         `
         SELECT * FROM chat_messages
@@ -125,6 +126,7 @@ async function dbFetchChat(roomID: string) {
 };
 
 async function dbFetchMessageNumber(roomID: string) {
+    
     const data = await db.query(
         `
         SELECT * FROM rooms
@@ -137,10 +139,85 @@ async function dbFetchMessageNumber(roomID: string) {
 };
 
 async function dbFetchNextQueueItemNumber(roomID: string) {
+    
     const data = await db.query(
         `
         SELECT * FROM rooms
         WHERE id = $1
+        `,
+        [roomID]
+    );
+
+    return data;
+};
+
+async function dbUpdateVideoNumber(roomID: string, newVideoNumber: number) {
+    
+    await db.query(
+        `
+        UPDATE rooms
+        SET next_queue_item_number = $2
+        WHERE id = $1
+        `,
+        [roomID, newVideoNumber]
+    );
+};
+
+async function dbAddVideoItem(roomID: string, item: QueueItem) {
+
+    await db.query(
+        `
+        INSERT INTO video_queue_items (
+            id,
+            room_id,
+            queue_item_number,
+            title,
+            video_id,
+            position
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+        [
+            item.id,
+            roomID,
+            item.queueItemNumber,
+            item.title,
+            item.videoID,
+            item.position
+        ]
+    );
+};
+
+async function dbRemoveVideoItem(id: string) {
+
+    await db.query(
+        `
+        DELETE FROM video_queue_items
+        WHERE id = $1
+        `,
+        [id]
+    );
+};
+
+async function dbUpdateVideoQueuePosition(item: QueueItem) {
+
+    await db.query(
+        `
+        UPDATE video_queue_items
+        SET position = $2
+        WHERE id = $1
+        `,
+        [item.id, item.position]
+    );
+
+};
+
+async function dbFetchVideoQueue(roomID: string) {
+
+    const data = await db.query(
+        `
+        SELECT * FROM video_queue_items
+        WHERE room_id = $1
         `,
         [roomID]
     );
@@ -282,7 +359,7 @@ async function createSession(sessionID: string) {
         const chat = await dbFetchChat(session.id);
 
         session.chat = chat.rows.map((message) => {
-            const formattedMessage: ChatMessage = {
+            const fetchedMessage: ChatMessage = {
                 id: message.id,
                 messageNumber: message.message_number,
                 createdAt: new Date(message.created_at).getTime(),
@@ -291,15 +368,29 @@ async function createSession(sessionID: string) {
                 message: message.message // lmao
             };
 
-            return formattedMessage;
+            return fetchedMessage;
         });
 
         const dbChatMessageNumber = (await dbFetchMessageNumber(session.id)).rows[0]?.next_message_number;
         if (dbChatMessageNumber) session.chatMessageNumber = dbChatMessageNumber;
 
         const dbNextQueueItemNumber = (await dbFetchNextQueueItemNumber(session.id)).rows[0]?.next_queue_item_number;
-        if (dbNextQueueItemNumber) session.chatMessageNumber = dbNextQueueItemNumber;
+        if (dbNextQueueItemNumber) session.queueItemNumber = dbNextQueueItemNumber;
         // console.log(session.id, session.chatMessageNumber);
+
+        const videoQueue = await dbFetchVideoQueue(session.id);
+        
+        session.videoQueue = videoQueue.rows.map((item) => {
+            const fetchedItem: QueueItem = {
+                id: item.id,
+                queueItemNumber: item.queue_item_number,
+                title: item.title,
+                videoID: item.video_id,
+                position: item.position,
+            }
+
+            return fetchedItem;
+        });
 
         return session;
 };
@@ -697,9 +788,9 @@ io.on("connection", (socket) => {
         const session = getSession(socket.id);
         if (!session) return;
 
-        const time = (session.timeUpdatedAt) ? session.videoTime + (Date.now() - session.timeUpdatedAt) / 1000 : session.videoTime;
+        
         // literally the same as fetch-time, but distinguished to trigger a different response
-        socket.emit("send-initial-time", session.status, time);
+        socket.emit("send-initial-time", session.status, session.videoTime, session.timeUpdatedAt);
     });
     
     //--
@@ -795,8 +886,8 @@ io.on("connection", (socket) => {
         
         io.to(session.id).emit("chat-message", chatRecord);
         
-        updateMessageNumber(session.id, session.chatMessageNumber);
-        addMessageLog(session.id, chatRecord);
+        dbUpdateMessageNumber(session.id, session.chatMessageNumber);
+        dbAddMessageLog(session.id, chatRecord);
     });
 
     //--
@@ -813,7 +904,7 @@ io.on("connection", (socket) => {
     // });
 
     //--
-    socket.on("add-video-to-queue", (videoID: string, title: string, token: string) => {
+    socket.on("add-video-to-queue", async (videoID: string, title: string, token: string) => {
         const session = getSession(socket.id);
         if (!session) return;
 
@@ -823,9 +914,9 @@ io.on("connection", (socket) => {
         if (data.clientID != session.host) return;
 
 
-        for (const item of session.videoQueue) {
-            if (item.videoID === videoID) return;
-        };
+        // for (const item of session.videoQueue) {
+        //     if (item.videoID === videoID) return;
+        // };
 
         const item: QueueItem = {
             id: `${session.id}-video-${session.queueItemNumber}`,
@@ -837,7 +928,10 @@ io.on("connection", (socket) => {
 
         session.videoQueue.push(item);
         session.queueItemNumber++;
-        io.to(session.id).emit("send-video-queue", session.videoQueue);
+        io.to(session.id).emit("update-video-queue", item);
+    
+        await dbUpdateVideoNumber(session.id, session.queueItemNumber);
+        await dbAddVideoItem(session.id, item);
     });
 
     //--
@@ -849,7 +943,7 @@ io.on("connection", (socket) => {
     });
 
     //--
-    socket.on("load-from-queue", (id: string, position: number, token: string) => {
+    socket.on("load-from-queue", async (id: string, position: number, token: string) => {
         const session = getSession(socket.id);
         if (!session) return;
 
@@ -862,18 +956,26 @@ io.on("connection", (socket) => {
 
         for (const item of session.videoQueue) {
             if (item.id !== id) {
-                if (item.position > position) item.position--;
+                if (item.position > position) {
+                    item.position--;
+
+                    await dbUpdateVideoQueuePosition(item);
+                }
                 newVideoQueue.push(item);
             } else {
+
                 session.videoID = item.videoID;
                 session.status = "unstarted";
                 io.to(session.id).emit("load-order", item.videoID);
+            
+                await dbRemoveVideoItem(item.id);
             }
         };
 
         session.videoQueue = newVideoQueue;
         
         io.to(session.id).emit("send-video-queue", session.videoQueue);
+        
     });
 
     //--

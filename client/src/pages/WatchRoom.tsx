@@ -168,9 +168,13 @@ function WatchRoom() {
         socket.on("chat-message", (message: ChatMessage) => {
             updateChat((prev) => [...prev, message]);
         });
+        socket.on("update-video-queue", (item) => {
+            updateVideoQueue((prev) =>
+                [...prev, item].sort( (a, b) => a.position - b.position)
+            ); // unsure if [...prev, item] will preserve the order I want. so sort it
+        });
         socket.on("send-video-queue", (queue) => {
             updateVideoQueue(queue);
-            console.log("Video Queue is: " + queue);
         });
 
 
@@ -192,6 +196,10 @@ function WatchRoom() {
             socket.off("send-video-queue");
         };
     }, []);
+
+    useEffect(() => {
+        console.log("Video Queue is: ", videoQueue);
+    }, [videoQueue]);
 
     return (
         <div>
@@ -245,7 +253,7 @@ function WatchRoom() {
                 }}>
                 {videoQueue.map((queuedVideo: QueueItem) => {
                     return (
-                        <li key={queuedVideo.videoID} 
+                        <li key={queuedVideo.id} 
                         style={{
                             display: "flex",
                             flexDirection: "row",
