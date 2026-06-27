@@ -18,6 +18,15 @@ type QueueItem = {
     position: number,
 };
 
+type ActivityItem = {
+    id: string,
+    eventNumber: number,
+    clientID: string | null,
+    nickname: string | null,
+    type: string,
+    message: string,
+    createdAt: number,
+};
 
 function WatchRoom() {
     const { sessionID } = useParams<string>();
@@ -31,15 +40,16 @@ function WatchRoom() {
     const [ chatMessage, changeChatMessage ] = useState<string>("");
     const [ chat, updateChat ] = useState<ChatMessage[]>([]);
     const [ videoQueue, updateVideoQueue ] = useState<QueueItem[]>([]);
+    const [ videoHistory, updateVideoHistory ] = useState<QueueItem[]>([]);
+    const [ activityLog, updateActivityLog ] = useState<ActivityItem[]>([]);
     const watchroomShellRef = useRef<HTMLDivElement |null>(null);
 
     const handleVideoSubmit = (e: any) => {
         e.preventDefault();
         videoID.current = extractVideoId(videoInput);
         socket.emit("load-request", videoID.current, sessionStorage.getItem("token"));
-    
-        setVideoInput("");
-    }
+        handleAddToHistory();
+    };
 
     const extractVideoId = (url: string) => {
         let result = url;
@@ -54,7 +64,7 @@ function WatchRoom() {
         }
 
         return result.split("&")[0]; // get rid of fragments
-    }
+    };
 
     const handleMakeHost = (clientID: string) => {
         socket.emit("change-host", sessionStorage.getItem("token"), clientID);
@@ -95,6 +105,23 @@ function WatchRoom() {
         setVideoInput("");
     };
 
+    const handleAddToHistory = async () => {
+        videoID.current = extractVideoId(videoInput);
+
+        if (!videoID) return;
+
+        const result = await fetch(
+            `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoID.current}&format=json`
+        );
+
+        if (!result.ok) return;
+        const data = await result.json();
+
+        socket.emit("add-video-to-history", videoID.current, data.title, sessionStorage.getItem("token"));
+
+        setVideoInput("");
+    };
+
     const getThumbnail = (queuedVideoID: string) => {
         return `https://img.youtube.com//vi/${queuedVideoID}/mqdefault.jpg`;
     };
@@ -103,6 +130,14 @@ function WatchRoom() {
         if (!isHost) return;
 
         socket.emit("load-from-queue", id, position, sessionStorage.getItem("token"));
+    };
+
+    const historyClick = (prevVideoID: string, title: string) => {
+        if (!isHost) return;
+
+        socket.emit("add-video-to-queue", prevVideoID, title, sessionStorage.getItem("token"));
+        // console.log("confirmed history click");
+        // socket.emit("load-from-history", prevVideoID, sessionStorage.getItem("token"));
     };
 
     const sendHome = () => {
@@ -140,7 +175,9 @@ function WatchRoom() {
             socket.emit("fetch-video");
             socket.emit("fetch-chat-history");
             socket.emit("fetch-video-queue");
+            socket.emit("fetch-video-history");
             socket.emit("fetch-initial-time");
+            socket.emit("fetch-activity");
         });
         socket.on("session-invalid", () => {
             navigate("/", { state: { error: "You tried to access a session that does not exist.", show: 1} });
@@ -176,6 +213,23 @@ function WatchRoom() {
         socket.on("send-video-queue", (queue) => {
             updateVideoQueue(queue);
         });
+        socket.on("update-video-history", (item) => {
+            updateVideoHistory((prev) =>
+                [...prev, item].sort( (a, b) => a.position - b.position)
+            ); // unsure if [...prev, item] will preserve the order I want. so sort it
+        });
+        socket.on("send-video-history", (queue) => {
+            updateVideoHistory(queue);
+        });
+        socket.on("activity", (item) => {
+            updateActivityLog((prev) =>
+                [...prev, item].sort( (a, b) => a.position - b.position)
+            ); // unsure if [...prev, item] will preserve the order I want. so sort it
+        });
+        socket.on("send-activity", (queue) => {
+            updateActivityLog(queue);
+        });
+
 
 
         return () => {
@@ -193,13 +247,21 @@ function WatchRoom() {
             socket.off("unbecome-host");
             socket.off("send-chat-history");
             socket.off("chat-message");
+            socket.off("update-video-queue");
             socket.off("send-video-queue");
+            socket.off("update-video-history");
+            socket.off("send-video-history");
+            socket.off("activity");
+            socket.off("send-activity");
         };
     }, []);
 
     useEffect(() => {
         console.log("Video Queue is: ", videoQueue);
     }, [videoQueue]);
+    useEffect(() => {
+        console.log("Video History is: ", videoHistory);
+    }, [videoHistory]);
 
     return (
         <div>
@@ -239,49 +301,124 @@ function WatchRoom() {
                 </div>
                 {/* VideoPlayer end */}
                 
+                
+                {/* History and Queue */}
+                <div
+                    style={{
+                        display: "flex",
+                        flexDirection: "column",
+                    }}
+                >
 
-                {/* VideoQueue */}
-                <ul style={{
-                    display: "flex",
-                    flex: 1,
-                    flexDirection: "column",
-                    maxHeight: "none",
-                    backgroundColor: "red",
-                    overflowY: "auto",
-                    listStyleType: "none",
-                    paddingTop: "20px",
-                }}>
-                {videoQueue.map((queuedVideo: QueueItem) => {
-                    return (
-                        <li key={queuedVideo.id} 
+                    {/* History */}
+                    <div 
                         style={{
                             display: "flex",
-                            flexDirection: "row",
-                            color: "white",
-                            cursor: "pointer",
-                            marginBottom: "10px",
-                            backgroundColor: "rgba(50,50,100,1)",
-                            padding: "20px",
-                            border: "2px solid white",
-                            borderRadius: "5px",
+                            flexDirection: "column",
+                            height: "300px",
+                            width: "400px",
+                            backgroundColor: "brown",
+                            padding: "0px",
+                            // border: "5px dashed white",
                         }}
-                        onClick={() => queueClick(queuedVideo.id, queuedVideo.position)}>
-                            <img src={getThumbnail(queuedVideo.videoID)} 
-                                alt="Video Thumbnail"
+                    >
+                        <div>Video History</div>
+                        <ul
+                            style={{
+                                overflowY: "auto",
+                                // border: "5px dashed white",
+                                margin: "0px",
+                                padding: "20px",
+                            }}
+                        >
+                        {videoHistory.map((previousVideo: QueueItem) => {
+                            return (
+                                <li 
+                                    key={previousVideo.id} 
+                                    style={{
+                                        display: "flex",
+                                        flexDirection: "row",
+                                        color: "white",
+                                        cursor: "pointer",
+                                        marginBottom: "10px",
+                                        backgroundColor: "rgba(50,50,100,1)",
+                                        padding: "20px",
+                                        border: "2px solid white",
+                                        borderRadius: "5px",
+                                    }}
+                                    onClick={() => historyClick(previousVideo.videoID, previousVideo.title)}
+                                >
+                                    <img src={getThumbnail(previousVideo.videoID)} 
+                                        alt="Video Thumbnail"
+                                        style={{
+                                            width: "128px",
+                                            height: "78px",
+                                            border: "2px solid gray",
+                                            borderRadius: "5px",
+                                        }}
+                                    />
+                                    <div>{previousVideo.title}</div>
+                                </li>
+                            );
+                        })}
+                        </ul>
+                    </div>
+                    {/* History end */}
+
+
+                    {/* VideoQueue */}
+                    <div
+                        style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            height: "300px",
+                            width: "400px",
+                            backgroundColor: "red",
+                            padding: "0px",
+                        }}
+                    >
+                        <div>Video Queue</div>
+                        <ul style={{
+                            flexDirection: "column",
+                            overflowY: "auto",
+                            listStyleType: "none",
+                            margin: "0px",
+                            padding: "20px",
+                        }}>
+                        {videoQueue.map((queuedVideo: QueueItem) => {
+                            return (
+                                <li key={queuedVideo.id} 
                                 style={{
-                                    width: "128px",
-                                    height: "78px",
-                                    border: "2px solid gray",
+                                    display: "flex",
+                                    flexDirection: "row",
+                                    color: "white",
+                                    cursor: "pointer",
+                                    marginBottom: "10px",
+                                    backgroundColor: "rgba(50,50,100,1)",
+                                    padding: "20px",
+                                    border: "2px solid white",
                                     borderRadius: "5px",
                                 }}
-                            />
-                            <div>{queuedVideo.title}</div>
-                        </li>
-                    );
-                })}
-                </ul>
-                {/* VideoQueue end */}
+                                onClick={() => queueClick(queuedVideo.id, queuedVideo.position)}>
+                                    <img src={getThumbnail(queuedVideo.videoID)} 
+                                        alt="Video Thumbnail"
+                                        style={{
+                                            width: "128px",
+                                            height: "78px",
+                                            border: "2px solid gray",
+                                            borderRadius: "5px",
+                                        }}
+                                    />
+                                    <div>{queuedVideo.title}</div>
+                                </li>
+                            );
+                        })}
+                        </ul>
+                    </div>
+                    {/* VideoQueue end */}
 
+                </div>
+                {/* History and Queue end */}
 
                 {/* Chat */}
                 <div style={{
@@ -349,8 +486,51 @@ function WatchRoom() {
                 />
                 <button type="submit">Change Nickname</button>
             </form>
+                
+            {/* Activity Log */}
+            <div
+                style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    height: "300px",
+                    width: "400px",
+                    backgroundColor: "red",
+                    padding: "0px",
+                }}
+            >
+                <div>Activities</div>
+                <ul style={{
+                    flexDirection: "column",
+                    overflowY: "auto",
+                    listStyleType: "none",
+                    margin: "0px",
+                    padding: "20px",
+                }}>
+                {activityLog.map((activity: ActivityItem) => {
 
-            
+                    return (
+                        <li key={activity.id} 
+                        style={{
+                            display: "flex",
+                            flexDirection: "row",
+                            color: "white",
+                            cursor: "pointer",
+                            marginBottom: "2px",
+                            backgroundColor: "rgba(50,50,100,1)",
+                            padding: "2px 5px",
+                            border: "1px solid white",
+                            borderRadius: "5px",
+                            fontSize: "10px",
+                        }}
+                        >   
+                            <div>{activity.eventNumber}: {activity.message}</div>
+                        </li>
+                    );
+                })}
+                </ul>
+            </div>
+            {/* Activity Log end */}
+        
             <button onClick={sendHome}>Home</button>
             {/* <button onClick={readDB}>Secret button to fix the DB</button> */}
         </div>

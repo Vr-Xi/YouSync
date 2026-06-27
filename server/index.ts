@@ -5,6 +5,7 @@ import cors from "cors";
 import jwt from "jsonwebtoken";
 import "dotenv/config";
 import { db } from "./db/db.js";
+import { DatabaseError } from "pg";
 
 const app = express();
 app.use(cors());
@@ -216,7 +217,118 @@ async function dbFetchVideoQueue(roomID: string) {
 
     const data = await db.query(
         `
-        SELECT * FROM video_queue_items
+        SELECT *
+        FROM video_queue_items
+        WHERE room_id = $1
+        ORDER BY position ASC
+        `,
+        [roomID]
+    );
+
+    return data;
+};
+
+async function dbFetchVideoHistory(roomID: string) {
+
+    const data = await db.query(
+        `
+        SELECT *
+        FROM video_history_items
+        WHERE room_id = $1
+        ORDER BY position ASC
+        `,
+        [roomID]
+    );
+
+    return data;
+};
+
+async function dbAddVideoHistory(roomID: string, item: QueueItem) {
+
+    await db.query(
+        `
+        INSERT INTO video_history_items (
+            id,
+            room_id,
+            queue_item_number,
+            title,
+            video_id,
+            position
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+        [
+            item.id,
+            roomID,
+            item.queueItemNumber,
+            item.title,
+            item.videoID,
+            item.position
+        ]
+    );
+};
+
+async function dbUpdateLogNumber(roomID: string) {
+
+    await db.query(
+        `
+        UPDATE rooms
+        SET next_log_number = next_log_number + 1
+        WHERE id = $1
+        `,
+        [roomID]
+    );
+};
+
+async function dbFetchLogNumber(roomID: string) {
+    
+    const data = await db.query(
+        `
+        SELECT next_log_number
+        FROM rooms
+        WHERE id = $1
+        `,
+        [roomID]
+    );
+
+    return data;
+};
+
+async function dbAddLog(roomID: string, log: ActivityItem) {
+
+    await db.query(
+        `
+        INSERT INTO event_logs (
+            id,
+            room_id,
+            event_number,
+            client_id,
+            nickname,
+            type,
+            message,
+            created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+        `,
+        [
+            log.id,
+            roomID,
+            log.eventNumber,
+            log.clientID,
+            log.nickname,
+            log.type,
+            log.message,
+            log.createdAt
+        ]
+    );  
+};
+
+async function dbFetchLogs(roomID: string) {
+
+    const data = await db.query(
+        `
+        SELECT *
+        FROM event_logs
         WHERE room_id = $1
         `,
         [roomID]
@@ -224,6 +336,7 @@ async function dbFetchVideoQueue(roomID: string) {
 
     return data;
 };
+
 
 async function readDBMessages() {
     const data1 = await db.query(
@@ -279,9 +392,11 @@ type Session = {
     status: string,
     videoTime: number,
     timeUpdatedAt: number | null,
-    videoQueue: Array<QueueItem>;
+    videoQueue: Array<QueueItem>,
     queueItemNumber: number,
-    actionID: number,
+    videoHistory: Array<QueueItem>,
+    activityLog: Array<ActivityItem>,
+    activityNumber: number,
 };
 
 type Client = {
@@ -306,6 +421,22 @@ type QueueItem = {
     videoID: string,
     title: string,
     position: number,
+};
+
+type ActivityItem = {
+    id: string,
+    eventNumber: number,
+    clientID: string | null,
+    nickname: string | null,
+    type: string,
+    message: string,
+    createdAt: number,
+};
+
+type EventPayload = {
+    seekTo?: number,
+    title?: string,
+    nickname?: string,
 };
 
 const sessions: Map<string, Session> = new Map();
@@ -345,19 +476,21 @@ async function createSession(sessionID: string) {
             nextUserNumber: 1,
             // videoID: "2H0r81kv5GA"
             // videoID: "zt3F7kRB5ik",
-            videoID: "8gKJ9mMPuIQ",
+            // videoID: "8gKJ9mMPuIQ", // Jaiden
             // videoID: "YWeSTFCr94g",
+            videoID: "",
             status: "unstarted",
             videoTime: 0,
             timeUpdatedAt: null,
             videoQueue: [],
             queueItemNumber: 1,
-            actionID: 1,
+            videoHistory: [],
+            activityLog: [],
+            activityNumber: 1,
         };
 
         sessions.set(session.id, session);
         const chat = await dbFetchChat(session.id);
-
         session.chat = chat.rows.map((message) => {
             const fetchedMessage: ChatMessage = {
                 id: message.id,
@@ -378,9 +511,11 @@ async function createSession(sessionID: string) {
         if (dbNextQueueItemNumber) session.queueItemNumber = dbNextQueueItemNumber;
         // console.log(session.id, session.chatMessageNumber);
 
-        const videoQueue = await dbFetchVideoQueue(session.id);
-        
-        session.videoQueue = videoQueue.rows.map((item) => {
+        const dbNextLogNumber = (await dbFetchLogNumber(session.id)).rows[0]?.next_log_number;
+        if (dbNextLogNumber) session.activityNumber = dbNextLogNumber;
+
+        const dbVideoQueue = await dbFetchVideoQueue(session.id);
+        session.videoQueue = dbVideoQueue.rows.map((item) => {
             const fetchedItem: QueueItem = {
                 id: item.id,
                 queueItemNumber: item.queue_item_number,
@@ -390,6 +525,35 @@ async function createSession(sessionID: string) {
             }
 
             return fetchedItem;
+        });
+
+        const dbVideoHistory = await dbFetchVideoHistory(session.id);
+        session.videoHistory = dbVideoHistory.rows.map((item) => {
+            const fetchedItem: QueueItem = {
+                id: item.id,
+                queueItemNumber: item.queue_item_number,
+                title: item.title,
+                videoID: item.video_id,
+                position: item.position,
+            }
+            
+            return fetchedItem;
+        });
+
+        const dbLogs = await dbFetchLogs(session.id);
+        session.activityLog = dbLogs.rows.map((log) => {
+            
+            const fetchedLog: ActivityItem = {
+                id: log.id,
+                eventNumber: log.event_number,
+                clientID: log.client_id,
+                nickname: log.nickname,
+                type: log.type,
+                message: log.message,
+                createdAt: log.created_at,
+            };
+
+            return fetchedLog;
         });
 
         return session;
@@ -445,6 +609,7 @@ function chooseNewHost(sessionID: string) {
         if (!candidate) return;
         session.host = candidate.id;
         io.to(candidateSocket).emit("become-host");
+        logEvent(session, session.clients.get(session.host), "HOST_CHANGED", {});
 };
 
 function chooseNewNickname(sessionID: string) {
@@ -471,6 +636,65 @@ function verifyIdentity(token: string) {
 
 };
 
+async function logEvent(session: Session, client: Client | undefined, action: string, payload: EventPayload) {
+    if (!session) return;
+
+    const log: ActivityItem = {
+        id: `${session.id}-activity-${session.activityNumber}`,
+        eventNumber: session.activityNumber,
+        clientID: client?.id || null,
+        nickname: client?.nickname || null,
+        type: action,
+        message: "",
+        createdAt: Date.now(),
+    };
+
+    if (action === "PLAY") {
+        log.message = `Video played by ${client?.nickname}.`;
+    } else if (action === "PAUSE") {
+        log.message = `Video paused by ${client?.nickname}.`;
+    } else if (action === "SEEK") {
+        log.message = `${client?.nickname} seeks to: ${payload.seekTo}`;
+    } else if (action === "VIDEO_LOAD") {
+        log.message = `Video loaded: ${payload.title}`;
+    } else if (action === "VIDEO_QUEUE") {
+        log.message = `Video added to queue: ${payload.title}`;
+    } else if (action === "VIDEO_QUEUE_LOAD") {
+        log.message = `Video loaded from queue: ${payload.title}`;
+    // } else if (action === "VIDEO_HISTORY_LOAD") {
+    //     log.message = `Video queued from history: ${payload.title}`;
+    } else if (action === "NICKNAME_CHANGED") {
+        log.message = `${client?.nickname} changed their nickname to: ${payload.nickname}`;
+    } else if (action === "USER_JOINED") {
+        log.message = `${client?.nickname} joined the room.`;
+    } else if (action === "USER_LEFT") {
+        log.message = `${client?.nickname} left the room.`;
+    } else if (action === "USER_KICKED") {
+        log.message = `${client?.nickname} was banned.`;
+    } else if (action === "HOST_CHANGED") {
+        log.message = `${client?.nickname} assumes hostship.`;
+    } else if (action === "ROOM_LOCKED") {
+        log.message = `Room locked.`;
+    } else if (action === "ROOM_UNLOCKED") {
+        log.message = `Room unlocked.`;
+    } else {
+        log.message = "Log failure."
+    };
+
+    session.activityLog.push(log);        
+    io.to(session.id).emit("activity", log);
+    
+
+    session.activityNumber++;
+    await dbUpdateLogNumber(session.id);
+    await dbAddLog(session.id, log);
+};
+
+
+
+
+
+
 
 function disconnectHelper(socketID: string): void {
     // used in both socket.on("disconnect") and socket.on("leave-session")
@@ -493,6 +717,8 @@ function disconnectHelper(socketID: string): void {
     session.socketToClientID.delete(socketID);
     session.clientIDToSocket.delete(clientID);
     socketToSession.delete(socketID);
+
+    logEvent(session, client, "USER_LEFT", {});
 
     // delete when empty
     if (session.activeClients.size === 0) {
@@ -528,6 +754,11 @@ function disconnectHelper(socketID: string): void {
     };
 };
 
+
+
+
+
+// Sockets ------------------------------------------------------------------------------
 
 io.on("connection", (socket) => {
     // console.log("User connected:", socket.id);
@@ -637,6 +868,8 @@ io.on("connection", (socket) => {
         socket.emit("auth-token", token);
         // socket.emit("load-order", session.videoID);
 
+        logEvent(session, session.clients.get(clientID), "USER_JOINED", {})
+
         await roomUpdate(session.id);
     });
 
@@ -662,18 +895,20 @@ io.on("connection", (socket) => {
     socket.on("load-request", (video: string, token: string) => {
         if (!token) return;
 
+        const session = getSession(socket.id);
+        if (!session) return;
+
         const clientID = verifyIdentity(token)?.clientID;
         if (!clientID) return;
         
-        const session = getSession(socket.id);
-        if (!session) return;
+        const client = session.clients.get(clientID);
+        if (!client) return;
 
         if (session.host != clientID) return;
         
         session.videoID = video;
         session.videoTime = 0;
         session.status = "unstarted";
-        l("Trying to emit a load order with the following parameters: " + session.videoID + " " + session.status + " " + session.videoTime + " " + session.timeUpdatedAt);
         io.to(session.id).emit("load-order", session.videoID, session.status, session.videoTime, session.timeUpdatedAt);
     });    
     
@@ -701,22 +936,25 @@ io.on("connection", (socket) => {
     });
     
     //--
-    socket.on("change-host", (token: string, newHostID) => {
+    socket.on("change-host", (token: string, newHostID: string) => {
         if (!token) return;
-
-        const clientID = verifyIdentity(token)?.clientID;
-        if (!clientID) return;
 
         const session = getSession(socket.id);
         if (!session) return;
 
-        if (session.host === clientID) {
-            const newHostSocket: string | undefined = session.clientIDToSocket.get(newHostID);
-            if (!newHostSocket) return;
-            session.host = newHostID;
-            io.to(newHostSocket).emit("become-host");
-            socket.emit("unbecome-host");
-        };
+        const clientID = verifyIdentity(token)?.clientID;
+        if (!clientID) return;
+
+        if (session.host !== clientID) return;
+        
+        const newHostSocket: string | undefined = session.clientIDToSocket.get(newHostID);
+        if (!newHostSocket) return;
+
+        session.host = newHostID;
+        io.to(newHostSocket).emit("become-host");
+        socket.emit("unbecome-host");
+
+        logEvent(session, session.clients.get(session.host), "HOST_CHANGED", {});
     });
 
     //--
@@ -734,8 +972,10 @@ io.on("connection", (socket) => {
         const client = session.clients.get(clientID);
         if (!client) return;
 
-        console.log(`${session.actionID}: ${client.nickname} emits a play order`);
-        session.actionID++;
+        // console.log(`${session.activityID}: ${client.nickname} emits a play order`);
+        
+        if (session.status === "playing") logEvent(session, client, "SEEK", {seekTo: time});
+        else logEvent(session, client, "PLAY", {});
 
         session.status = "playing";
         session.videoTime = time;
@@ -759,8 +999,9 @@ io.on("connection", (socket) => {
         const client = session.clients.get(clientID);
         if (!client) return;
 
-        console.log(`${session.actionID}: ${client.nickname} emits a pause order`);        
-        session.actionID++;
+        // marker
+        if (session.status === "paused") logEvent(session, client, "SEEK", {seekTo: time});
+        else logEvent(session, client, "PAUSE", {});
 
         session.status = "paused";
         session.videoTime = time;
@@ -839,6 +1080,7 @@ io.on("connection", (socket) => {
 
         if (session.nicknames.has(nickname)) return;
 
+        logEvent(session, client, "NICKNAME_CHANGED", {nickname: nickname});
         const oldNickname = client.nickname;
         session.nicknames.delete(oldNickname);
 
@@ -853,7 +1095,7 @@ io.on("connection", (socket) => {
         io.to(session.id).emit("send-members", nicknames);
         socket.emit("send-nickname", nickname);
         io.to(session.id).emit("send-chat-history", session.chat);
-    
+        
         dbNicknameChange(session.id, clientID, nickname);
     });
 
@@ -911,7 +1153,11 @@ io.on("connection", (socket) => {
         const data = verifyIdentity(token);
         if (!data) return;
 
+        const client = session.clients.get(data.clientID);
+        if (!client) return;
+
         if (data.clientID != session.host) return;
+
 
 
         // for (const item of session.videoQueue) {
@@ -929,6 +1175,8 @@ io.on("connection", (socket) => {
         session.videoQueue.push(item);
         session.queueItemNumber++;
         io.to(session.id).emit("update-video-queue", item);
+
+        logEvent(session, client, "VIDEO_QUEUE", {title: title});
     
         await dbUpdateVideoNumber(session.id, session.queueItemNumber);
         await dbAddVideoItem(session.id, item);
@@ -950,7 +1198,10 @@ io.on("connection", (socket) => {
         const data = verifyIdentity(token);
         if (!data) return;
 
-        if (data.clientID != session.host) return;
+        const client = session.clients.get(data.clientID);
+        if (!client) return
+
+        if (client.id != session.host) return;
 
         const newVideoQueue: Array<QueueItem> = [];
 
@@ -966,17 +1217,102 @@ io.on("connection", (socket) => {
 
                 session.videoID = item.videoID;
                 session.status = "unstarted";
+                item.position = session.videoHistory.length + 1;
+                session.videoHistory.push(item);
                 io.to(session.id).emit("load-order", item.videoID);
+                io.to(session.id).emit("update-video-history", item);
             
                 await dbRemoveVideoItem(item.id);
+                await dbAddVideoHistory(session.id, item);
+                
+                logEvent(session, client, "VIDEO_QUEUE_LOAD", {title: item.title})
             }
         };
 
         session.videoQueue = newVideoQueue;
         
         io.to(session.id).emit("send-video-queue", session.videoQueue);
-        
+
     });
+
+    //--
+    socket.on("add-video-to-history", async (videoID: string, title: string, token: string) => {
+        const session = getSession(socket.id);
+        if (!session) return;
+
+        const data = verifyIdentity(token);
+        if (!data) return;
+
+        if (data.clientID != session.host) return;
+
+        const client = session.clients.get(data.clientID);
+        if (!client) return;
+
+        // for (const item of session.videoQueue) {
+        //     if (item.videoID === videoID) return;
+        // };
+
+        const item: QueueItem = {
+            id: `${session.id}-video-${session.queueItemNumber}`,
+            queueItemNumber: session.queueItemNumber,
+            videoID,
+            title,
+            position: session.videoHistory.length + 1,
+        };
+
+        session.videoHistory.push(item);
+        session.queueItemNumber++;
+
+        io.to(session.id).emit("update-video-history", item);
+
+        logEvent(session, client, "VIDEO_LOAD", {title: title});
+        
+        await dbAddVideoHistory(session.id, item);
+        await dbUpdateVideoNumber(session.id, session.queueItemNumber);
+    });
+
+
+    //--
+    socket.on("fetch-video-history", () => {
+        const session = getSession(socket.id);
+        if (!session) return;
+
+        socket.emit("send-video-history", session.videoHistory);
+    });
+
+    //--
+    socket.on("fetch-activity", () => {
+        const session = getSession(socket.id);
+        if (!session) return;
+
+        socket.emit("send-activity", session.activityLog);
+    });
+
+    //--
+    // socket.on("load-from-history", async (videoID: string, token) => {
+    //     const session = getSession(socket.id);
+    //     if (!session) return;
+
+    //     const data = verifyIdentity(token);
+    //     if (!data) return;
+
+    //     if (data.clientID != session.host) return;
+
+    //     const item: QueueItem = {  
+    //         id: `${session.id}-video-${session.queueItemNumber}`,
+    //         queueItemNumber: session.queueItemNumber,
+    //         videoID,
+    //         title,
+    //         position: session.videoQueue.length + 1,
+    //     };
+
+    //     session.videoQueue.push(item);
+    //     session.queueItemNumber++;
+    //     io.to(session.id).emit("update-video-queue", item);
+    
+    //     await dbUpdateVideoNumber(session.id, session.queueItemNumber);
+    //     await dbAddVideoItem(session.id, item);
+    // });
 
     //--
     socket.on("leave-session", () => {

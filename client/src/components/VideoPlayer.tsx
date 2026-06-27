@@ -173,6 +173,7 @@ const VideoPlayer = ({ onToggleFullscreen }: VideoPlayerProps) => {
         const player = playerRef.current;
         if (!player) return;
         if (status != "playing") return;
+        if (player.getPlayerState() === 0 || player.getPlayerState === 5) return;
 
         time = time + (Date.now() - updatedAt) / 1000;
 
