@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import VideoPlayer from "../components/VideoPlayer.tsx";
 import socket from "../socket.ts";
+import styles from "./WatchRoom.module.css";
 
 type ChatMessage = {
     id: number,
@@ -42,12 +43,16 @@ function WatchRoom() {
     const [ videoQueue, updateVideoQueue ] = useState<QueueItem[]>([]);
     const [ videoHistory, updateVideoHistory ] = useState<QueueItem[]>([]);
     const [ activityLog, updateActivityLog ] = useState<ActivityItem[]>([]);
+    const [ roomLocked, setRoomLocked ] = useState<boolean>(false);
+    const localToken = useRef<string | null>(localStorage.getItem("yousync-localToken"));
+    const sessionToken = useRef<string | null>(sessionStorage.getItem("yousync-sessionToken"));
     const watchroomShellRef = useRef<HTMLDivElement |null>(null);
+
 
     const handleVideoSubmit = (e: any) => {
         e.preventDefault();
         videoID.current = extractVideoId(videoInput);
-        socket.emit("load-request", videoID.current, sessionStorage.getItem("token"));
+        socket.emit("load-request", videoID.current, sessionToken.current);
         handleAddToHistory();
     };
 
@@ -67,12 +72,12 @@ function WatchRoom() {
     };
 
     const handleMakeHost = (clientID: string) => {
-        socket.emit("change-host", sessionStorage.getItem("token"), clientID);
+        socket.emit("change-host", sessionToken.current, clientID);
     };
 
     const handleNicknameSubmit = (e: any) => {
         e.preventDefault();
-        socket.emit("change-nickname", pendingNickname, sessionStorage.getItem("token"));
+        socket.emit("change-nickname", pendingNickname, sessionToken.current);
     }; 
 
     const handleChatMessage = (e: any) => {
@@ -80,7 +85,7 @@ function WatchRoom() {
         if (chatMessage === "") return;
         if (chatMessage.length > 100) return;
         console.log(chatMessage);
-        socket.emit("send-chat-message", chatMessage, sessionStorage.getItem("token"));
+        socket.emit("send-chat-message", chatMessage, sessionToken.current);
         changeChatMessage("");
     };
 
@@ -100,7 +105,7 @@ function WatchRoom() {
         if (!result.ok) return;
         const data = await result.json();
 
-        socket.emit("add-video-to-queue", videoID.current, data.title, sessionStorage.getItem("token"));
+        socket.emit("add-video-to-queue", videoID.current, data.title, sessionToken.current);
 
         setVideoInput("");
     };
@@ -117,7 +122,7 @@ function WatchRoom() {
         if (!result.ok) return;
         const data = await result.json();
 
-        socket.emit("add-video-to-history", videoID.current, data.title, sessionStorage.getItem("token"));
+        socket.emit("add-video-to-history", videoID.current, data.title, sessionToken.current);
 
         setVideoInput("");
     };
@@ -129,18 +134,18 @@ function WatchRoom() {
     const queueClick = (id: string, position: number) => {
         if (!isHost) return;
 
-        socket.emit("load-from-queue", id, position, sessionStorage.getItem("token"));
+        socket.emit("load-from-queue", id, position, sessionToken.current);
     };
 
     const historyClick = (prevVideoID: string, title: string) => {
         if (!isHost) return;
 
-        socket.emit("add-video-to-queue", prevVideoID, title, sessionStorage.getItem("token"));
+        socket.emit("add-video-to-queue", prevVideoID, title, sessionToken.current);
         // console.log("confirmed history click");
         // socket.emit("load-from-history", prevVideoID, sessionStorage.getItem("token"));
     };
 
-    const sendHome = () => {
+    const goHome = () => {
         navigate("/");
         socket.emit("leave-session");
     };
@@ -168,7 +173,7 @@ function WatchRoom() {
         // if (!sessionStorage.getItem("clientID")) sessionStorage.setItem("clientID", crypto.randomUUID())
         // const clientID = sessionStorage.getItem("clientID");
 
-        socket.emit("join-session", sessionID, sessionStorage.getItem("token"));
+        socket.emit("join-session", sessionID, localToken.current, sessionToken.current);
 
         socket.on("joined-session", () => {
             socket.emit("fetch-members");
@@ -178,9 +183,10 @@ function WatchRoom() {
             socket.emit("fetch-video-history");
             socket.emit("fetch-initial-time");
             socket.emit("fetch-activity");
+            socket.emit("fetch-lock-state");
         });
         socket.on("session-invalid", () => {
-            navigate("/", { state: { error: "You tried to access a session that does not exist.", show: 1} });
+            navigate("/not-found", { state: { error: "You tried to access a session that does not exist.", show: 1} });
         })
         socket.on("send-members", (members) => {
             setMembers(members);
@@ -189,9 +195,12 @@ function WatchRoom() {
             changeNickname(newNickname);
             changePendingNickname(newNickname);
         })
-        socket.on("auth-token", (token: string) => {
-            sessionStorage.setItem("token", token);
-            socket.emit("check-hostship", sessionStorage.getItem("token"));
+        socket.on("auth-token", (newLocalToken: string, newSessionToken: string) => {
+            localStorage.setItem("yousync-localToken", newLocalToken);
+            sessionStorage.setItem("yousync-sessionToken", newSessionToken);
+            localToken.current = newLocalToken;
+            sessionToken.current = newSessionToken;
+            socket.emit("check-hostship", sessionToken.current);
         });
         socket.on("become-host", () => {
             changeHostship(true);
@@ -229,6 +238,9 @@ function WatchRoom() {
         socket.on("send-activity", (queue) => {
             updateActivityLog(queue);
         });
+        socket.on("send-lock", (state: boolean) => {
+            setRoomLocked(state);
+        });
 
 
 
@@ -253,6 +265,7 @@ function WatchRoom() {
             socket.off("send-video-history");
             socket.off("activity");
             socket.off("send-activity");
+            socket.off("send-lock");
         };
     }, []);
 
@@ -265,20 +278,40 @@ function WatchRoom() {
 
     return (
         <div>
+            <div className={styles["scaffolding-1"]}>
+                <span>Lock Room</span>
+                {/* <div className={styles["scaffolding-2"]}> */}
+                    <label className={styles["switch"]}>
+                        <input
+                            type="checkbox"
+                            checked={roomLocked}
+                            onChange={(e) => {
+                                const locked = e.target.checked;
+                                socket.emit("set-room-lock", locked, sessionToken.current);
+                            }}
+                        />
+                        <span className={styles["slider"]} />
+                    </label>
+                    
+                {/* </div> */}
+            </div>
+
             <h1>Watch Room - Session ID: {sessionID} </h1>
-            {isHost && <form onSubmit={handleVideoSubmit}>
-                <input 
-                    type="text" 
-                    value={videoInput}
-                    onChange={(e) => setVideoInput(e.target.value)}
-                    placeholder="Paste YouTube link"
-                />
+            {isHost && 
+                <form onSubmit={handleVideoSubmit}>
+                    <input 
+                        type="text" 
+                        value={videoInput}
+                        onChange={(e) => setVideoInput(e.target.value)}
+                        placeholder="Paste YouTube link"
+                    />
 
 
-                <button type="submit">Load Now</button>
+                    <button type="submit">Load Now</button>
 
-                <button type="button" onClick={handleAddToQueue}>Play Next</button>
-            </form>}
+                    <button type="button" onClick={handleAddToQueue}>Play Next</button>
+                </form>
+            }
 
 
             <div
@@ -531,7 +564,7 @@ function WatchRoom() {
             </div>
             {/* Activity Log end */}
         
-            <button onClick={sendHome}>Home</button>
+            <button onClick={goHome}>Home</button>
             {/* <button onClick={readDB}>Secret button to fix the DB</button> */}
         </div>
     );

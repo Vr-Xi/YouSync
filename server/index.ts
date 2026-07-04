@@ -5,7 +5,7 @@ import cors from "cors";
 import jwt from "jsonwebtoken";
 import "dotenv/config";
 import { db } from "./db/db.js";
-import { DatabaseError } from "pg";
+// import { DatabaseError } from "pg";
 
 const app = express();
 app.use(cors());
@@ -397,6 +397,8 @@ type Session = {
     videoHistory: Array<QueueItem>,
     activityLog: Array<ActivityItem>,
     activityNumber: number,
+    banList: Array<string>,
+    roomLocked: boolean,
 };
 
 type Client = {
@@ -442,6 +444,7 @@ type EventPayload = {
 const sessions: Map<string, Session> = new Map();
 const socketToSession: Map<string, string> = new Map();
 let hostReconnectGrace: NodeJS.Timeout;
+const clientIDToSession: Map<string, string> = new Map();
 // const reconnections: Map<string, NodeJS.Timeout> = new Map();
 
 function generateID() {
@@ -487,6 +490,8 @@ async function createSession(sessionID: string) {
             videoHistory: [],
             activityLog: [],
             activityNumber: 1,
+            banList: [],
+            roomLocked: false,
         };
 
         sessions.set(session.id, session);
@@ -559,8 +564,43 @@ async function createSession(sessionID: string) {
         return session;
 };
 
-function issueToken(clientID: string, sessionID: string, lifeID: string) {
+function issueSessionToken(clientID: string, sessionID: string, lifeID: string) {
     return jwt.sign({ clientID, sessionID, lifeID }, SECRET, { expiresIn: "24h" });
+};
+
+function issueLocalToken(clientID: string) {
+    return jwt.sign({ clientID }, SECRET, { expiresIn: "24h" });
+}
+
+function getNewClientID(sessionID: string, localToken: string | null) {
+    let clientID: string;
+    let newLocalToken: string;
+
+    try {
+        
+    } catch {
+
+    }
+
+    if (localToken == null) {
+        clientID = crypto.randomUUID();
+        clientIDToSession.set(clientID, sessionID);
+        newLocalToken = issueLocalToken(clientID);
+    } else {
+        try {
+            const data = jwt.verify(localToken, SECRET) as { clientID: string };
+            clientID = data.clientID;
+            newLocalToken = localToken;
+        } catch {
+            clientID = crypto.randomUUID();
+            clientIDToSession.set(clientID, sessionID);
+            newLocalToken = issueLocalToken(clientID);
+        }
+    }
+
+    
+
+    return { clientID, newLocalToken };
 };
 
 function getNicknames(sessionID: string) {
@@ -690,7 +730,13 @@ async function logEvent(session: Session, client: Client | undefined, action: st
     await dbAddLog(session.id, log);
 };
 
+function banCheck(sessionID: string, clientID: string) {
+    const session = sessions.get(sessionID);
+    if (!session) return;
 
+    if (session.banList.includes(clientID)) return true;
+    else return false;
+}
 
 
 
@@ -776,7 +822,7 @@ io.on("connection", (socket) => {
     });
 
     //--
-    socket.on("join-session", async (sessionID: string, inputToken: string) => {
+    socket.on("join-session", async (sessionID: string, localToken: string, sessionToken: string) => {
         let session = sessions.get(sessionID);
         if (!session) {
             if (await roomExists(sessionID)) {
@@ -788,23 +834,33 @@ io.on("connection", (socket) => {
             }
         };
 
-        let data = verifyIdentity(inputToken);
+        let sessionData = verifyIdentity(sessionToken);
         let client: Client;
-        let token;
+        let newLocalToken: string;
+        let newSessionToken: string;
 
-        if (!data || data.sessionID != session.id || data.lifeID != session.lifeID) {
+        if (!sessionData || sessionData.sessionID != session.id || sessionData.lifeID != session.lifeID) {
             // people who reload will have a token. new arrivals will be given one here
             // people who have a stale token will also land here, getting a new one
             // tokens can be stale if the tab is coming from another watchroom, or if the current watchroom was revived by activity
-            const newClientID = crypto.randomUUID();
-            token = issueToken(newClientID, session.id, session.lifeID);
-            data = verifyIdentity(token);
+            const data = getNewClientID(session.id, localToken);
+            const newClientID = data.clientID;
+            newLocalToken = data.newLocalToken;
+
+            if (banCheck(session.id, newClientID)) {
+                socket.emit("session-invalid");
+                return;
+            }
+
+            newSessionToken = issueSessionToken(newClientID, session.id, session.lifeID);
+            sessionData = verifyIdentity(newSessionToken);
             socket.emit("unbecome-host"); // sometimes necessary because browser navigation buttons do weird things
         } else {
-            token = inputToken;
+            newLocalToken = localToken;
+            newSessionToken = sessionToken;
         }
 
-        const clientID = data?.clientID;
+        const clientID = sessionData?.clientID;
         if (!clientID) return;
 
         // if the session was about to close down, stop that
@@ -826,6 +882,12 @@ io.on("connection", (socket) => {
             session.clientIDToSocket.set(clientID, socket.id);
             socket.emit("send-nickname", client.nickname);
         } else {
+            if (session.roomLocked) {
+                socket.emit("session-invalid");
+                return;
+            };
+
+
             const nickname = chooseNewNickname(sessionID);
             if (typeof(nickname) != "string") {
                 // console.log("Nickname Generation Failure");
@@ -865,7 +927,7 @@ io.on("connection", (socket) => {
         session.lastActivity = Date.now();
         
         socket.emit("joined-session");
-        socket.emit("auth-token", token);
+        socket.emit("auth-token", newLocalToken, newSessionToken);
         // socket.emit("load-order", session.videoID);
 
         logEvent(session, session.clients.get(clientID), "USER_JOINED", {})
@@ -951,8 +1013,8 @@ io.on("connection", (socket) => {
         if (!newHostSocket) return;
 
         session.host = newHostID;
+        io.to(session.id).emit("unbecome-host");
         io.to(newHostSocket).emit("become-host");
-        socket.emit("unbecome-host");
 
         logEvent(session, session.clients.get(session.host), "HOST_CHANGED", {});
     });
@@ -1289,30 +1351,32 @@ io.on("connection", (socket) => {
     });
 
     //--
-    // socket.on("load-from-history", async (videoID: string, token) => {
-    //     const session = getSession(socket.id);
-    //     if (!session) return;
+    socket.on("set-room-lock", (locked: boolean, token: string) => {
+        const session = getSession(socket.id);
+        if (!session) return;
 
-    //     const data = verifyIdentity(token);
-    //     if (!data) return;
+        const data = verifyIdentity(token);
+        if (!data) return;
 
-    //     if (data.clientID != session.host) return;
+        const client = session.clients.get(data.clientID);
+        if (!client) return;
 
-    //     const item: QueueItem = {  
-    //         id: `${session.id}-video-${session.queueItemNumber}`,
-    //         queueItemNumber: session.queueItemNumber,
-    //         videoID,
-    //         title,
-    //         position: session.videoQueue.length + 1,
-    //     };
+        if (data.clientID != session.host) return;
 
-    //     session.videoQueue.push(item);
-    //     session.queueItemNumber++;
-    //     io.to(session.id).emit("update-video-queue", item);
-    
-    //     await dbUpdateVideoNumber(session.id, session.queueItemNumber);
-    //     await dbAddVideoItem(session.id, item);
-    // });
+        session.roomLocked = locked;
+        io.to(session.id).emit("send-lock", session.roomLocked);
+        
+        if (locked) logEvent(session, client, "ROOM_LOCKED", {});
+        else logEvent(session, client, "ROOM_UNLOCKED", {});
+    });
+
+    //--
+    socket.on("fetch-lock-state", () => {
+        const session = getSession(socket.id);
+        if (!session) return;
+
+        socket.emit("send-lock", session.roomLocked);
+    });
 
     //--
     socket.on("leave-session", () => {
