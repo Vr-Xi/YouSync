@@ -337,6 +337,53 @@ async function dbFetchLogs(roomID: string) {
     return data;
 };
 
+async function dbClearLogs(roomID: string) {
+
+    const data = await db.query(
+        `
+        DELETE FROM event_logs
+        WHERE room_id = $1
+        `,
+        [roomID]
+    );
+
+    return data;
+};
+
+async function dbAddBan(roomID: string, clientID: string) {
+
+    try {
+        const data = await db.query(
+            `
+            INSERT INTO room_bans (
+                room_id,
+                client_id   
+            )
+            VALUES ($1, $2)
+            `,
+            [roomID, clientID]
+        );
+
+        return data;
+
+    } catch {
+        return;
+    }
+};
+
+async function dbFetchBans(roomID: string) {
+
+    const data = await db.query(
+        `
+        SELECT * 
+        FROM room_bans
+        WHERE room_id = $1
+        `,
+        [roomID]
+    );
+
+    return data;
+};
 
 async function readDBMessages() {
     const data1 = await db.query(
@@ -380,7 +427,7 @@ type Session = {
     clients: Map<string, Client>,
     activeClients: Map<string, Client>, // almost the same as clients, but excluding people who left
     socketToClientID: Map<string, string>,
-    clientIDToSocket: Map<string, string>,
+    clientIDToSockets: Map<string, Set<string>>,
     nicknames: Map<string, string>,
     chat: Array<ChatMessage>,
     chatMessageNumber: number,
@@ -397,7 +444,7 @@ type Session = {
     videoHistory: Array<QueueItem>,
     activityLog: Array<ActivityItem>,
     activityNumber: number,
-    banList: Array<string>,
+    banList: Set<string>,
     roomLocked: boolean,
 };
 
@@ -470,7 +517,7 @@ async function createSession(sessionID: string) {
             clients: new Map(),
             activeClients: new Map(),
             socketToClientID: new Map(),
-            clientIDToSocket: new Map(),
+            clientIDToSockets: new Map(),
             nicknames: new Map(),
             chat: [],
             chatMessageNumber: 1,
@@ -490,7 +537,7 @@ async function createSession(sessionID: string) {
             videoHistory: [],
             activityLog: [],
             activityNumber: 1,
-            banList: [],
+            banList: new Set(),
             roomLocked: false,
         };
 
@@ -561,6 +608,11 @@ async function createSession(sessionID: string) {
             return fetchedLog;
         });
 
+        const dbBans = await dbFetchBans(session.id);
+        for (const row of dbBans.rows) {
+            session.banList.add(row.client_id);
+        }
+
         return session;
 };
 
@@ -575,12 +627,6 @@ function issueLocalToken(clientID: string) {
 function getNewClientID(sessionID: string, localToken: string | null) {
     let clientID: string;
     let newLocalToken: string;
-
-    try {
-        
-    } catch {
-
-    }
 
     if (localToken == null) {
         clientID = crypto.randomUUID();
@@ -627,28 +673,23 @@ function chooseNewHost(sessionID: string) {
         const session = sessions.get(sessionID);
         if (!session) return;
 
-        let candidateSocket;
         let candidate;
 
         // console.log("___________Crowning a new Host___________");
 
         for (const [ clientID, client ] of session.activeClients) {
             if (!candidate) {
-                candidateSocket = session.clientIDToSocket.get(clientID);
                 candidate = client;
             } else if (candidate.joinedAt > client.joinedAt) {
-                    candidateSocket = session.clientIDToSocket.get(clientID);
-                    candidate = client;
+                candidate = client;
             }
         };
         
         // console.log("___________Long live the Host!___________");
 
-        
-        if (!candidateSocket) return;
         if (!candidate) return;
         session.host = candidate.id;
-        io.to(candidateSocket).emit("become-host");
+        emitToClientID(session, candidate.id, "become-host", {})
         logEvent(session, session.clients.get(session.host), "HOST_CHANGED", {});
 };
 
@@ -669,6 +710,7 @@ function chooseNewNickname(sessionID: string) {
 function verifyIdentity(token: string) {
     try {
         const data = jwt.verify(token, SECRET) as { clientID: string, sessionID: string, lifeID: string };
+        if ( sessions.get(data.sessionID)?.banList.has(data.clientID) ) return; // if banned, don't listen to a single command. this is here just in case there's some way to bypass all other ban restrictions. weird things are possible
         return data;
     } catch {
         return; // reject invalid tokens
@@ -730,17 +772,27 @@ async function logEvent(session: Session, client: Client | undefined, action: st
     await dbAddLog(session.id, log);
 };
 
-function banCheck(sessionID: string, clientID: string) {
-    const session = sessions.get(sessionID);
-    if (!session) return;
+function addSocketToClientID(session: Session, clientID: string, socketID: string) {
+    if (!session.clientIDToSockets.has(clientID)) session.clientIDToSockets.set(clientID, new Set());
+    
+    let sockets: Set<string> | undefined = session.clientIDToSockets.get(clientID);
 
-    if (session.banList.includes(clientID)) return true;
-    else return false;
-}
+    if (!sockets) {
+        l("FATAL CLIENT ATTRIBUTION ERROR");
+        return;
+    }
 
+    sockets.add(socketID);
+} 
 
+function emitToClientID(session: Session, clientID: string, emitType: string, payload: unknown) {
+    const sockets: Set<string> | undefined = session.clientIDToSockets.get(clientID);
+    if (!sockets) return;
 
-
+    for (const socketID of sockets) {
+        io.to(socketID).emit(emitType, payload);
+    };
+}   
 
 function disconnectHelper(socketID: string): void {
     // used in both socket.on("disconnect") and socket.on("leave-session")
@@ -753,15 +805,19 @@ function disconnectHelper(socketID: string): void {
     if (!clientID) return;
     const client = session.clients.get(clientID);
     if (!client) return;
-
+    const sockets = session.clientIDToSockets.get(clientID);
+    if (!sockets) return;
 
     // note: sockets need to be deleted more readily than clientIDs
     // clientIDs can be maintained over reload, while sockets cannot
     // actually.. maybe complete deletion isn't necessary. In fact I think I'll rule it that way, yeah
 
-    session.activeClients.delete(clientID);
     session.socketToClientID.delete(socketID);
-    session.clientIDToSocket.delete(clientID);
+    sockets.delete(socketID);
+    if (sockets.size === 0) {
+        session.activeClients.delete(clientID);
+        session.clientIDToSockets.delete(clientID);
+    }
     socketToSession.delete(socketID);
 
     logEvent(session, client, "USER_LEFT", {});
@@ -822,7 +878,7 @@ io.on("connection", (socket) => {
     });
 
     //--
-    socket.on("join-session", async (sessionID: string, localToken: string, sessionToken: string) => {
+    socket.on("join-session", async (sessionID: string, localToken: string, sessionToken: string) => {    
         let session = sessions.get(sessionID);
         if (!session) {
             if (await roomExists(sessionID)) {
@@ -847,10 +903,6 @@ io.on("connection", (socket) => {
             const newClientID = data.clientID;
             newLocalToken = data.newLocalToken;
 
-            if (banCheck(session.id, newClientID)) {
-                socket.emit("session-invalid");
-                return;
-            }
 
             newSessionToken = issueSessionToken(newClientID, session.id, session.lifeID);
             sessionData = verifyIdentity(newSessionToken);
@@ -861,7 +913,13 @@ io.on("connection", (socket) => {
         }
 
         const clientID = sessionData?.clientID;
-        if (!clientID) return;
+        if (!clientID) {
+            // emitToClientID(session, clientID, "session-invalid", {});
+            // ^^^ WRONG.
+            // This is an entry condition. The socket hasn't made it into clientIDtoSockets yet. So emitToClientIID will hit an empty set.
+            socket.emit("session-invalid");
+            return;
+        }
 
         // if the session was about to close down, stop that
         if (session.deletionTimer) {
@@ -879,7 +937,7 @@ io.on("connection", (socket) => {
 
             session.activeClients.set(clientID, client);
             session.socketToClientID.set(socket.id, clientID);
-            session.clientIDToSocket.set(clientID, socket.id);
+            addSocketToClientID(session, clientID, socket.id);
             socket.emit("send-nickname", client.nickname);
         } else {
             if (session.roomLocked) {
@@ -904,7 +962,7 @@ io.on("connection", (socket) => {
             session.clients.set(clientID, client);
             session.activeClients.set(clientID, client);
             session.socketToClientID.set(socket.id, clientID);
-            session.clientIDToSocket.set(clientID, socket.id);
+            addSocketToClientID(session, clientID, socket.id);
             session.nicknames.set(nickname, clientID);
         };
 
@@ -1009,12 +1067,10 @@ io.on("connection", (socket) => {
 
         if (session.host !== clientID) return;
         
-        const newHostSocket: string | undefined = session.clientIDToSocket.get(newHostID);
-        if (!newHostSocket) return;
 
         session.host = newHostID;
         io.to(session.id).emit("unbecome-host");
-        io.to(newHostSocket).emit("become-host");
+        emitToClientID(session, session.host, "become-host", {});
 
         logEvent(session, session.clients.get(session.host), "HOST_CHANGED", {});
     });
@@ -1376,6 +1432,45 @@ io.on("connection", (socket) => {
         if (!session) return;
 
         socket.emit("send-lock", session.roomLocked);
+    });
+
+    //--
+    socket.on("fetch-client-id", () => {
+        const session = getSession(socket.id);
+        if (!session) return;
+        const clientID = session.socketToClientID.get(socket.id);
+        if (!clientID) return;
+        const client = session.clients.get(clientID);
+        if (!client) return;
+
+        socket.emit("send-client-id", client.id);
+    });
+
+    //--
+    socket.on("ban", async (sessionToken: string, target: string) => {
+        const session = getSession(socket.id);
+        if (!session) return;
+        const data = verifyIdentity(sessionToken);
+        if (!data) return;
+        const clientID = data.clientID;
+        if (!clientID) return;
+
+        if (session.host != clientID) return;
+        
+        session.banList.add(target);
+        emitToClientID(session, target, "session-invalid", {});
+        
+        dbAddBan(session.id, target);
+    });
+
+    //--
+    socket.on("clear-logs-request", () => {
+        const session = getSession(socket.id);
+        if (!session) return;
+
+        dbClearLogs(session.id);
+        session.activityLog = [];
+        io.to(session.id).emit("clear-logs-order");
     });
 
     //--

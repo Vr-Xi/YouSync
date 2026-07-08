@@ -43,3 +43,15 @@
 .switch input:checked + .slider::before {
     transform: translateX(24px);
 }
+
+
+.member-list {
+    position: relative;
+}
+.member-list-ban-overlay {
+    position: absolute;
+    left: 60%;
+    padding: 20px;
+    border: 5px solid white;
+    background: rgba(50, 50, 100, 1);
+}

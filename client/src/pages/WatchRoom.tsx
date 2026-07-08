@@ -46,7 +46,9 @@ function WatchRoom() {
     const [ roomLocked, setRoomLocked ] = useState<boolean>(false);
     const localToken = useRef<string | null>(localStorage.getItem("yousync-localToken"));
     const sessionToken = useRef<string | null>(sessionStorage.getItem("yousync-sessionToken"));
-    const watchroomShellRef = useRef<HTMLDivElement |null>(null);
+    const clientID = useRef<string | null>(null);
+    const [ banOverlay, setBanOverlay ] = useState<string | null>(null);
+    const watchroomShellRef = useRef<HTMLDivElement | null>(null);
 
 
     const handleVideoSubmit = (e: any) => {
@@ -77,6 +79,8 @@ function WatchRoom() {
 
     const handleNicknameSubmit = (e: any) => {
         e.preventDefault();
+        console.log(memberList);
+        console.log(clientID.current);
         socket.emit("change-nickname", pendingNickname, sessionToken.current);
     }; 
 
@@ -84,7 +88,6 @@ function WatchRoom() {
         e.preventDefault();
         if (chatMessage === "") return;
         if (chatMessage.length > 100) return;
-        console.log(chatMessage);
         socket.emit("send-chat-message", chatMessage, sessionToken.current);
         changeChatMessage("");
     };
@@ -161,8 +164,26 @@ function WatchRoom() {
         };
     };
 
-    useEffect(() => {
+    const openBanOverlay = (id: string) => {
+        setBanOverlay(id);
+    };
 
+    const banConfirm = (id: string) => {
+        console.log("banning " + id);
+        setBanOverlay(null);
+        socket.emit("ban", sessionToken.current,id);
+    };
+
+    const banCancel = () => {
+        setBanOverlay(null);
+    };
+
+    // const clearActivity = () => {
+    //     socket.emit("clear-logs-request");
+    // };
+
+    useEffect(() => {
+        console.log("confirm");
         // managing nickname persistence across page reload
         // const prevSessionID = sessionStorage.getItem("prevSessionID");
         // if (prevSessionID != sessionID) sessionStorage.clear();
@@ -184,9 +205,10 @@ function WatchRoom() {
             socket.emit("fetch-initial-time");
             socket.emit("fetch-activity");
             socket.emit("fetch-lock-state");
+            socket.emit("fetch-client-id");
         });
         socket.on("session-invalid", () => {
-            navigate("/not-found", { state: { error: "You tried to access a session that does not exist.", show: 1} });
+            navigate("/not-found", { replace: true }); 
         })
         socket.on("send-members", (members) => {
             setMembers(members);
@@ -241,7 +263,12 @@ function WatchRoom() {
         socket.on("send-lock", (state: boolean) => {
             setRoomLocked(state);
         });
-
+        socket.on("send-client-id", (id: string) => {
+            clientID.current = id;
+        });
+        socket.on("clear-logs-order", () => {
+            updateActivityLog([]);
+        });
 
 
         return () => {
@@ -266,15 +293,29 @@ function WatchRoom() {
             socket.off("activity");
             socket.off("send-activity");
             socket.off("send-lock");
+            socket.off("send-client-id");
+            socket.off("clear-logs-order");
         };
     }, []);
 
     useEffect(() => {
-        console.log("Video Queue is: ", videoQueue);
+        // console.log("Video Queue is: ", videoQueue);
     }, [videoQueue]);
     useEffect(() => {
-        console.log("Video History is: ", videoHistory);
+        // console.log("Video History is: ", videoHistory);
     }, [videoHistory]);
+    useEffect(() => {
+        function handleBFC(event: PageTransitionEvent) { // Back-Forward Cache
+            if (event.persisted) window.location.reload();
+        }
+
+        window.addEventListener("pageshow", handleBFC);
+
+        return () => {
+            window.removeEventListener("pageshow", handleBFC);
+        }
+    }, []);
+
 
     return (
         <div>
@@ -491,8 +532,8 @@ function WatchRoom() {
             
             </div>
 
-
-            <ul>
+            {/* Members */}
+            <ul className={styles["member-list"]}>
                 {memberList.map((entry: [string, string]) => {
                     return (
                         <li 
@@ -500,12 +541,30 @@ function WatchRoom() {
                             style={{
                                 backgroundColor: (entry[1] === nickname) ? "green" : "none",
                             }}
-                        >
+                            className={styles["member-list-item"]}
+                        >         
+
+                            {(entry[0] === banOverlay &&
+                                <div 
+                                    className={styles["member-list-ban-overlay"]}
+                                >
+                                    This user ({entry[1]}) will no longer be able to enter this room.
+
+                                    <div>
+                                        <button onClick={() => banConfirm(entry[0])}>Confirm</button>
+                                        <button onClick={() => banCancel()}>Cancel</button>
+                                    </div>
+                                </div>
+                            )}
+
+ 
                             {entry[1]}
-                            {(isHost && entry[1] != nickname) && <button onClick={() => handleMakeHost(entry[0])}>Make Host</button>}
-                            {(isHost && entry[1] != nickname) && <button>Kick</button>}
+                            {(isHost && entry[0] != clientID.current) && <button onClick={() => handleMakeHost(entry[0])}>Make Host</button>}
+                            {(isHost && entry[0] != clientID.current) && <button onClick={() => openBanOverlay(entry[0])}>Ban</button>}
                             {/* {isHost && <button onClick={() => handleMakeHost(entry[0])}>Make Host</button>} */}
                             {/* {isHost && <button>Kick</button>} */}
+
+
                         </li>
                     )
                 })}
@@ -519,6 +578,7 @@ function WatchRoom() {
                 />
                 <button type="submit">Change Nickname</button>
             </form>
+            {/* Members End */}
                 
             {/* Activity Log */}
             <div
@@ -566,6 +626,7 @@ function WatchRoom() {
         
             <button onClick={goHome}>Home</button>
             {/* <button onClick={readDB}>Secret button to fix the DB</button> */}
+            {/* <button onClick={clearActivity}>Secret button to clear Activity</button> */}
         </div>
     );
 }
